@@ -18,12 +18,23 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+redis = [
+  "redis>=5.0,<6",
+]
+embeddings = [
+  "sentence-transformers>=3.0,<4; python_version < '3.13'",
+]
+runtime = [
+  "redis>=5.0,<6",
+  "sentence-transformers>=3.0,<4; python_version < '3.13'",
+]
 evaluation = [
   "google-genai>=1.0,<2",
 ]
 dev = [
   "google-genai>=1.0,<2",
   "pytest>=8.0,<9",
+  "redis>=5.0,<6",
 ]
 
 [tool.setuptools.packages.find]
@@ -34,4 +45,5 @@ testpaths = ["tests"]
 markers = [
   "ollama: integration tests that require a running Ollama instance",
   "gemini: integration tests that require Gemini and Ollama",
+  "redis_integration: integration tests that require a running Redis server",
 ]

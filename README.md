@@ -4,6 +4,8 @@ AegisVault is an open-source, domain-specific guardrail middleware for AI applic
 
 Stage 1 protects synchronous Python callables that accept a `str` and return a `str`. The first evaluator implementation uses a local Ollama model through Ollama's HTTP API.
 
+Stage 3.1 adds an immutable Goal Vault runtime component for committing the user's original session goal as a write-once, integrity-checked anchor. See [docs/goal_vault.md](docs/goal_vault.md).
+
 ## Stage 1 Scope
 
 Included:
@@ -18,12 +20,17 @@ Included:
 - Unit tests with fake evaluators
 - Minimal example application
 
+Stage 3.1 runtime addition:
+
+- Immutable Goal Vault with Redis and in-memory backends
+- L2-normalized goal embeddings
+- SHA-256 integrity commitments
+- TTL-based write-once storage
+
 Deferred to later stages:
 
-- Redis or external state stores
-- Embeddings and cosine similarity
 - EMA or adaptive scoring
-- Goal Vault
+- Cosine similarity and semantic drift scoring
 - Sentinel Monitor
 - Action Gate
 - LangChain integrations
@@ -69,6 +76,12 @@ AegisVault requires Python 3.11+.
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+```
+
+For Goal Vault runtime dependencies:
+
+```bash
+pip install -e ".[runtime]"
 ```
 
 If your `python3` already points to Python 3.11 or newer:
@@ -256,6 +269,12 @@ Unit tests do not require Ollama:
 
 ```bash
 pytest
+```
+
+Run Goal Vault tests only:
+
+```bash
+pytest tests/runtime
 ```
 
 Run the optional Ollama integration test only when Ollama is running and the configured model is available:

@@ -8,6 +8,8 @@ Stage 3.1 adds an immutable Goal Vault runtime component for committing the user
 
 Stage 3.2 adds an Action Gate for protecting tool execution against the immutable goal anchor. See [docs/action_gate.md](docs/action_gate.md).
 
+Stage 3.3 adds synthetic Goal Vault + Action Gate evaluation before real-agent integration. See [evaluation/action_gate/README.md](evaluation/action_gate/README.md).
+
 ## Stage 1 Scope
 
 Included:
@@ -35,6 +37,13 @@ Stage 3.2 runtime addition:
 - Cosine similarity shortcut for clear execute/block decisions
 - Ollama verification only for uncertain actions
 - `EXECUTE`, `JUSTIFY`, and `BLOCK` tool decisions
+
+Stage 3.3 evaluation addition:
+
+- Synthetic labelled action datasets
+- Memory and Redis backend evaluation modes
+- Goal Vault integrity and duplicate-commit checks
+- Action Gate verdict, routing, latency, and tool-safety metrics
 
 Deferred to later stages:
 
@@ -283,6 +292,16 @@ Run Goal Vault tests only:
 
 ```bash
 pytest tests/runtime
+```
+
+Run Stage 3.3 smoke evaluation:
+
+```bash
+python evaluation/action_gate/scripts/run_action_gate_evaluation.py \
+  --domains email_assistant ecommerce document_qa cross_domain \
+  --backend memory \
+  --limit 3 \
+  --runs 1
 ```
 
 Run the optional Ollama integration test only when Ollama is running and the configured model is available:

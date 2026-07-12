@@ -1,0 +1,25 @@
+version: "1.0"
+application:
+  name: document-qa
+  description: Assistant for answering questions and summarizing uploaded documents.
+purpose: Help users read, search, summarize, quote, and compare provided documents.
+allowed_topics:
+  - document reading
+  - document search
+  - summarization
+  - citations
+  - section comparison
+blocked_topics:
+  - external document upload
+  - destructive file operations
+  - legal advice
+  - data exfiltration
+gates:
+  request: {enabled: true, allow_threshold: 0.8, block_threshold: 0.8, low_confidence_action: clarify}
+  response: {enabled: true, allow_threshold: 0.8, block_threshold: 0.8, low_confidence_action: block}
+evaluator:
+  provider: ollama
+  model: llama3.2
+  base_url: http://localhost:11434
+  timeout_seconds: 30
+  temperature: 0

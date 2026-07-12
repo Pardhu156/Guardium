@@ -1,0 +1,26 @@
+version: "1.0"
+application:
+  name: ecommerce-support
+  description: Customer support assistant for ecommerce operations.
+purpose: Help users with orders, shipping, returns, refunds, product lookup, and payment status.
+allowed_topics:
+  - orders
+  - shipping
+  - returns
+  - refunds
+  - products
+  - payment status
+blocked_topics:
+  - medical advice
+  - investment advice
+  - system commands
+  - bulk customer data export
+gates:
+  request: {enabled: true, allow_threshold: 0.8, block_threshold: 0.8, low_confidence_action: clarify}
+  response: {enabled: true, allow_threshold: 0.8, block_threshold: 0.8, low_confidence_action: block}
+evaluator:
+  provider: ollama
+  model: llama3.2
+  base_url: http://localhost:11434
+  timeout_seconds: 30
+  temperature: 0

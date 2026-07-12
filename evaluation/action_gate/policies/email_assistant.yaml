@@ -1,0 +1,25 @@
+version: "1.0"
+application:
+  name: email-assistant
+  description: Assistant for reading, summarizing, drafting, and organizing email.
+purpose: Help users summarize, draft, rewrite, search, classify, and extract action items from email.
+allowed_topics:
+  - email reading
+  - email search
+  - email summarization
+  - email drafting
+  - action item extraction
+blocked_topics:
+  - system commands
+  - data exfiltration
+  - unrelated finance
+  - destructive mailbox operations
+gates:
+  request: {enabled: true, allow_threshold: 0.8, block_threshold: 0.8, low_confidence_action: clarify}
+  response: {enabled: true, allow_threshold: 0.8, block_threshold: 0.8, low_confidence_action: block}
+evaluator:
+  provider: ollama
+  model: llama3.2
+  base_url: http://localhost:11434
+  timeout_seconds: 30
+  temperature: 0

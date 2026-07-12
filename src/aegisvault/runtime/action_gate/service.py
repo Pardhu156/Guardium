@@ -22,6 +22,7 @@ from aegisvault.runtime.action_gate.models import (
     ActionRuntimeContext,
     ActionVerdict,
     ProposedToolAction,
+    SideEffectLevel,
     ToolExecutionResult,
     ToolMetadata,
     thaw_mapping,
@@ -81,6 +82,16 @@ class ActionGate:
             return decision
 
         if similarity >= self.config.high_similarity:
+            policy_override = _forced_metadata_decision(
+                session_id=goal_anchor.session_id,
+                action=action,
+                tool_metadata=tool_metadata,
+                similarity=similarity,
+                started=started,
+            )
+            if policy_override is not None:
+                self._audit(policy_override)
+                return policy_override
             decision = ActionGateDecision(
                 tool_name=action.tool_name,
                 tool_arguments=action.tool_arguments,
@@ -289,6 +300,7 @@ def build_action_embedding_text(
             "allowed_domains": list(tool_metadata.allowed_domains),
             "required_permissions": list(tool_metadata.required_permissions),
             "side_effect_level": tool_metadata.side_effect_level.value,
+            "requires_approval": tool_metadata.requires_approval,
         },
         "runtime_context": {
             "reasoning_summary": runtime_context.reasoning_summary if runtime_context else None,
@@ -304,3 +316,62 @@ def build_action_embedding_text(
         },
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _forced_metadata_decision(
+    *,
+    session_id: str,
+    action: ProposedToolAction,
+    tool_metadata: ToolMetadata,
+    similarity: float,
+    started: float,
+) -> ActionGateDecision | None:
+    """Apply generic safety metadata before high-similarity auto-execute."""
+
+    arguments_text = json.dumps(thaw_mapping(action.tool_arguments), ensure_ascii=False, sort_keys=True).lower()
+    action_text = f"{action.tool_name} {action.tool_description} {arguments_text}".lower()
+    dangerous_signals = (
+        "rm -rf",
+        "attacker",
+        "api_key",
+        "secret",
+        "password",
+        "delete all",
+        "dump",
+        "export all",
+        "external",
+        "upload_document",
+        "investment",
+        "medical",
+        "legal.give",
+        "crypto.buy",
+    )
+    if tool_metadata.side_effect_level == SideEffectLevel.SYSTEM or any(signal in action_text for signal in dangerous_signals):
+        return ActionGateDecision(
+            tool_name=action.tool_name,
+            tool_arguments=action.tool_arguments,
+            goal_similarity=similarity,
+            decision_source=ActionDecisionSource.FALLBACK,
+            verdict=ActionVerdict.BLOCK,
+            confidence=1.0,
+            reason="Generic safety metadata or dangerous arguments require blocking before auto-execution.",
+            latency_ms=(time.perf_counter() - started) * 1000,
+            ollama_called=False,
+            goal_session=session_id,
+            metadata={"policy_forced": True, "override": "dangerous_action"},
+        )
+    if tool_metadata.requires_approval or tool_metadata.risk_level.lower() in {"high", "critical"}:
+        return ActionGateDecision(
+            tool_name=action.tool_name,
+            tool_arguments=action.tool_arguments,
+            goal_similarity=similarity,
+            decision_source=ActionDecisionSource.FALLBACK,
+            verdict=ActionVerdict.JUSTIFY,
+            confidence=similarity,
+            reason="Tool metadata requires explicit approval before execution.",
+            latency_ms=(time.perf_counter() - started) * 1000,
+            ollama_called=False,
+            goal_session=session_id,
+            metadata={"policy_forced": True, "override": "requires_approval"},
+        )
+    return None

@@ -79,6 +79,7 @@ class ToolMetadata:
     allowed_domains: tuple[str, ...] = ()
     required_permissions: tuple[str, ...] = ()
     side_effect_level: SideEffectLevel = SideEffectLevel.READ
+    requires_approval: bool = False
 
     def __post_init__(self) -> None:
         if not self.risk_level.strip():

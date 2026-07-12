@@ -11,4 +11,6 @@ build/
 logs/
 evaluation/results/*
 !evaluation/results/.gitkeep
+evaluation/action_gate/results/*
+!evaluation/action_gate/results/.gitkeep
 .DS_Store

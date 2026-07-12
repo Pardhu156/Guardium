@@ -205,6 +205,7 @@ Tool metadata:
 - allowed_domains: {json.dumps(list(tool_metadata.allowed_domains), ensure_ascii=False)}
 - required_permissions: {json.dumps(list(tool_metadata.required_permissions), ensure_ascii=False)}
 - side_effect_level: {tool_metadata.side_effect_level.value}
+- requires_approval: {tool_metadata.requires_approval}
 
 Runtime context:
 {json.dumps(context_payload, ensure_ascii=False, sort_keys=True)}

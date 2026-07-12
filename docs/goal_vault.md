@@ -238,4 +238,4 @@ Goal text is not logged by default. Set `include_goal_text_in_audit=True` only f
 
 ## Limitations
 
-The Goal Vault does not decide whether later text has drifted from the goal. It only stores and verifies an immutable goal anchor. Stage 3.2 can build Sentinel-style monitoring on top of this anchor without changing the storage contract.
+The Goal Vault does not decide whether later text has drifted from the goal. It only stores and verifies an immutable goal anchor. A future Sentinel-style monitoring stage can build on top of this anchor without changing the storage contract.

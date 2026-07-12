@@ -6,6 +6,8 @@ Stage 1 protects synchronous Python callables that accept a `str` and return a `
 
 Stage 3.1 adds an immutable Goal Vault runtime component for committing the user's original session goal as a write-once, integrity-checked anchor. See [docs/goal_vault.md](docs/goal_vault.md).
 
+Stage 3.2 adds an Action Gate for protecting tool execution against the immutable goal anchor. See [docs/action_gate.md](docs/action_gate.md).
+
 ## Stage 1 Scope
 
 Included:
@@ -27,12 +29,18 @@ Stage 3.1 runtime addition:
 - SHA-256 integrity commitments
 - TTL-based write-once storage
 
+Stage 3.2 runtime addition:
+
+- Action Gate for proposed tool calls
+- Cosine similarity shortcut for clear execute/block decisions
+- Ollama verification only for uncertain actions
+- `EXECUTE`, `JUSTIFY`, and `BLOCK` tool decisions
+
 Deferred to later stages:
 
 - EMA or adaptive scoring
-- Cosine similarity and semantic drift scoring
 - Sentinel Monitor
-- Action Gate
+- Continuous semantic drift scoring
 - LangChain integrations
 - Web APIs, UI, Docker, and deployment code
 

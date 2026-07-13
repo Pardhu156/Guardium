@@ -10,6 +10,8 @@ Stage 3.2 adds an Action Gate for protecting tool execution against the immutabl
 
 Stage 3.3 adds synthetic Goal Vault + Action Gate evaluation before real-agent integration. See [evaluation/action_gate/README.md](evaluation/action_gate/README.md).
 
+Stage 4.0 adds an independent local Qwen/Ollama tool-calling runtime validation layer. See [docs/agent_runtime.md](docs/agent_runtime.md).
+
 ## Stage 1 Scope
 
 Included:
@@ -44,6 +46,13 @@ Stage 3.3 evaluation addition:
 - Memory and Redis backend evaluation modes
 - Goal Vault integrity and duplicate-commit checks
 - Action Gate verdict, routing, latency, and tool-safety metrics
+
+Stage 4.0 runtime validation addition:
+
+- Ollama + Qwen Instruct local runtime
+- Generic tool registry
+- Local mock tools
+- Structured traces and validation reports
 
 Deferred to later stages:
 
@@ -302,6 +311,12 @@ python evaluation/action_gate/scripts/run_action_gate_evaluation.py \
   --backend memory \
   --limit 3 \
   --runs 1
+```
+
+Run Stage 4.0 mock validation:
+
+```bash
+python evaluation/agent_runtime/scripts/validate_agent_runtime.py --mock
 ```
 
 Run the optional Ollama integration test only when Ollama is running and the configured model is available:

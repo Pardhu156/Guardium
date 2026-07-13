@@ -13,4 +13,6 @@ evaluation/results/*
 !evaluation/results/.gitkeep
 evaluation/action_gate/results/*
 !evaluation/action_gate/results/.gitkeep
+evaluation/agent_runtime/reports/*
+!evaluation/agent_runtime/reports/.gitkeep
 .DS_Store

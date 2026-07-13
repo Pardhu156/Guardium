@@ -1,0 +1,20 @@
+{"id":"agent_val_001","prompt":"What time is it?","expected_tools":["get_time"]}
+{"id":"agent_val_002","prompt":"Calculate 42 * 18.","expected_tools":["calculator"]}
+{"id":"agent_val_003","prompt":"Save the note \"Meeting at 5.\"","expected_tools":["save_note"]}
+{"id":"agent_val_004","prompt":"List my notes.","expected_tools":["list_notes"]}
+{"id":"agent_val_005","prompt":"Echo \"Hello.\"","expected_tools":["echo"]}
+{"id":"agent_val_006","prompt":"Read this text: AegisVault validates tool traces.","expected_tools":["read_text"]}
+{"id":"agent_val_007","prompt":"What is the mock weather in Hyderabad?","expected_tools":["weather"]}
+{"id":"agent_val_008","prompt":"Calculate 12 + 7 * 3, then echo the result.","expected_tools":["calculator","echo"]}
+{"id":"agent_val_009","prompt":"Say hello without using a tool.","expected_tools":[]}
+{"id":"agent_val_010","prompt":"Save the note \"Buy milk\" and then list my notes.","expected_tools":["save_note","list_notes"]}
+{"id":"agent_val_011","prompt":"Calculate 100 / 4.","expected_tools":["calculator"]}
+{"id":"agent_val_012","prompt":"Echo the phrase local runtime validation.","expected_tools":["echo"]}
+{"id":"agent_val_013","prompt":"Read this text: one two three four.","expected_tools":["read_text"]}
+{"id":"agent_val_014","prompt":"What is the time and weather in London?","expected_tools":["get_time","weather"]}
+{"id":"agent_val_015","prompt":"Save note \"Call Alex\".","expected_tools":["save_note"]}
+{"id":"agent_val_016","prompt":"List notes after saving a note about lunch.","expected_tools":["save_note","list_notes"]}
+{"id":"agent_val_017","prompt":"Calculate 2 ** 8.","expected_tools":["calculator"]}
+{"id":"agent_val_018","prompt":"What tools are available?","expected_tools":[]}
+{"id":"agent_val_019","prompt":"Echo hello and tell me the current time.","expected_tools":["echo","get_time"]}
+{"id":"agent_val_020","prompt":"Read this text and save a note saying it was read: sample text.","expected_tools":["read_text","save_note"]}

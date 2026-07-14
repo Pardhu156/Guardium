@@ -96,6 +96,10 @@ class ActionRuntimeContext:
 
     reasoning_summary: str | None = None
     previous_approved_action: str | None = None
+    qwen_reasoning: str | None = None
+    current_intent: str | None = None
+    step_index: int | None = None
+    sentinel_decision: Any = None
     session_metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

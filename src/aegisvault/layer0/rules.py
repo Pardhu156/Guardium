@@ -261,7 +261,8 @@ def _tool_schema_invalid(context: Layer0ToolCallInput) -> Layer0RuleResult | Non
     schema = _schema_from_definition(definition)
     if not schema:
         return None
-    error = validate_schema(schema, context.arguments)
+    arguments = _schema_arguments(context.arguments)
+    error = validate_schema(schema, arguments)
     if error:
         return _block("L0_TOOL_SCHEMA_INVALID", Layer0RiskLevel.MEDIUM, error)
     return None
@@ -296,9 +297,7 @@ def _tool_external_destination(context: Layer0ToolCallInput, config: Layer0Confi
     allowed = {_normalize(value) for value in rule.allowed_values}
     denied: list[str] = []
     for field in rule.fields:
-        if field not in context.arguments:
-            continue
-        values = _as_values(context.arguments[field])
+        values = _destination_values(context.arguments, field)
         denied.extend(value for value in values if _normalize(value) not in allowed)
     if denied:
         return _block(
@@ -308,6 +307,23 @@ def _tool_external_destination(context: Layer0ToolCallInput, config: Layer0Confi
             {"fields": list(rule.fields), "denied_count": len(denied)},
         )
     return None
+
+
+def _destination_values(arguments: Mapping[str, Any], field: str) -> list[str]:
+    values: list[str] = []
+    if field in arguments:
+        values.extend(_as_values(arguments[field]))
+    kwargs = arguments.get("kwargs")
+    if isinstance(kwargs, Mapping) and field in kwargs:
+        values.extend(_as_values(kwargs[field]))
+    return values
+
+
+def _schema_arguments(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    kwargs = arguments.get("kwargs")
+    if set(arguments).issubset({"args", "kwargs"}) and isinstance(kwargs, Mapping):
+        return kwargs
+    return arguments
 
 
 def _schema_from_definition(definition: Any) -> Mapping[str, Any] | None:

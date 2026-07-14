@@ -1,0 +1,128 @@
+version: "1.0"
+
+application:
+  name: email-assistant-stage5
+  description: Stage 5 email assistant policy with Layer 0 and Sentinel enabled
+
+purpose: >
+  Help users search, read, summarize, draft, rewrite, reply to, forward, share,
+  archive, move, delete, classify, and find action items in emails.
+
+allowed_topics:
+  - summarize an email
+  - read an email
+  - draft an email
+  - reply to an email
+  - forward an email
+  - share an email
+  - rewrite an email
+  - archive an email
+  - move an email
+  - delete an email
+  - identify action items
+  - classify email urgency
+  - search-related email requests
+  - email thread management
+  - email organization workflows
+
+blocked_topics:
+  - write production code
+  - solve mathematics homework
+  - provide medical treatment advice
+  - give financial investment recommendations
+
+gates:
+  request:
+    enabled: true
+    allow_threshold: 0.80
+    block_threshold: 0.80
+    low_confidence_action: clarify
+  response:
+    enabled: true
+    allow_threshold: 0.80
+    block_threshold: 0.80
+    low_confidence_action: block
+
+evaluator:
+  provider: ollama
+  model: llama3.2
+  base_url: http://localhost:11434
+  timeout_seconds: 30
+  temperature: 0
+
+fallback:
+  evaluator_failure_action: block
+  malformed_output_action: block
+
+checks:
+  max_request_chars: 8000
+  max_response_chars: 12000
+  blocked_phrases: []
+  blocked_keywords: []
+  keyword_case_insensitive: true
+
+layer0:
+  enabled: true
+  fail_mode: closed
+  stop_on_first_block: false
+  request:
+    require_session_id: true
+    require_domain: true
+    allowed_domains:
+      - email
+      - email-assistant-stage5
+    max_characters: 20000
+    max_bytes: 50000
+    forbidden_patterns:
+      literals: []
+      regex: []
+  tools:
+    allowlist_mode: true
+    allowed:
+      - read_email
+      - search_email
+      - summarize_email
+      - draft_email
+      - send_email
+      - archive_email
+      - delete_email
+      - list_unread
+      - list_threads
+    denied: []
+    max_argument_bytes: 50000
+    sensitive_argument_action: warn
+    destination_rules:
+      send_email:
+        fields:
+          - to
+          - recipients
+        allowed_values:
+          - manager@example.com
+          - support@example.com
+
+sentinel:
+  enabled: true
+  fail_mode: closed
+  signals:
+    reasoning: true
+    intent: true
+    action: true
+  runtime:
+    evaluate_before_every_tool: true
+    require_trusted_goal: true
+    audit_missing_signals: true
+  enforcement:
+    block_on_sentinel_block: true
+    review_requires_action_gate_verification: true
+
+audit:
+  enabled: true
+  output_path: logs/evaluation/email_assistant_stage5_aegisvault.jsonl
+  include_request_text: true
+  include_response_text: true
+
+messages:
+  request_blocked: "I can only help with email tasks such as search, read, draft, reply, forward, summarize, classify, archive, move, delete, share, or identify action items."
+  request_clarify: "Please restate your request as an email-assistance task."
+  response_blocked: "I cannot provide that response because it falls outside email assistance."
+  response_replaced: "I cannot provide that response because it falls outside email assistance."

@@ -15,6 +15,8 @@ evaluation/action_gate/results/*
 !evaluation/action_gate/results/.gitkeep
 evaluation/agent_runtime/reports/*
 !evaluation/agent_runtime/reports/.gitkeep
+evaluation/sentinel/results/*
+!evaluation/sentinel/results/.gitkeep
 reports/email_agent/*
 !reports/email_agent/.gitkeep
 reports/aegisbench_v1/*

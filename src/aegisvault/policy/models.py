@@ -219,6 +219,59 @@ class Layer0Config(BaseModel):
     tools: Layer0ToolsConfig = Field(default_factory=Layer0ToolsConfig)
 
 
+class SentinelFailMode(str, Enum):
+    """Sentinel unexpected-error behavior."""
+
+    CLOSED = "closed"
+    OPEN = "open"
+
+
+class SentinelSignalsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reasoning: bool = True
+    intent: bool = True
+    action: bool = True
+
+
+class SentinelRuntimeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    evaluate_before_every_tool: bool = True
+    require_trusted_goal: bool = True
+    audit_missing_signals: bool = True
+
+
+class SentinelEnforcementConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    block_on_sentinel_block: bool = True
+    review_requires_action_gate_verification: bool = True
+
+
+class SentinelPolicyConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    fail_mode: SentinelFailMode = SentinelFailMode.CLOSED
+    signals: SentinelSignalsConfig = Field(default_factory=SentinelSignalsConfig)
+    runtime: SentinelRuntimeConfig = Field(default_factory=SentinelRuntimeConfig)
+    enforcement: SentinelEnforcementConfig = Field(default_factory=SentinelEnforcementConfig)
+    reasoning_weight: float = Field(default=0.20, ge=0.0, le=1.0)
+    intent_weight: float = Field(default=0.35, ge=0.0, le=1.0)
+    action_weight: float = Field(default=0.45, ge=0.0, le=1.0)
+    ema_alpha: float = Field(default=0.40, ge=0.0, le=1.0)
+    allow_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
+    observe_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
+    review_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_thresholds(self) -> "SentinelPolicyConfig":
+        if not (self.allow_threshold <= self.observe_threshold <= self.review_threshold):
+            raise ValueError("sentinel thresholds must be ordered: allow <= observe <= review")
+        return self
+
+
 class DomainPolicy(BaseModel):
     """Complete domain policy loaded from YAML."""
 
@@ -236,6 +289,7 @@ class DomainPolicy(BaseModel):
     checks: DeterministicChecksConfig = Field(default_factory=DeterministicChecksConfig)
     messages: MessagesConfig = Field(default_factory=MessagesConfig)
     layer0: Layer0Config = Field(default_factory=Layer0Config)
+    sentinel: SentinelPolicyConfig = Field(default_factory=SentinelPolicyConfig)
 
     @field_validator("version")
     @classmethod

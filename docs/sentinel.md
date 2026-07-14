@@ -1,6 +1,6 @@
 # Sentinel Runtime Monitor
 
-Sentinel is a standalone runtime monitoring module. It estimates whether a running agent is drifting away from the trusted goal stored by Goal Vault.
+Sentinel is a runtime monitoring module. It estimates whether a running agent is drifting away from the trusted goal stored by Goal Vault.
 
 Sentinel does not:
 
@@ -10,7 +10,6 @@ Sentinel does not:
 - call Request Gate, Action Gate, or Response Gate
 - invoke an LLM
 - make network calls
-- integrate into the middleware runtime in this stage
 
 Action Gate remains the authorization component.
 
@@ -106,6 +105,38 @@ decision = sentinel.analyze(
 )
 ```
 
+## Policy Configuration
+
+Sentinel is disabled by default for backward compatibility. Existing policies without a `sentinel` section preserve the Stage 4.2/5.1 path.
+
+```yaml
+sentinel:
+  enabled: true
+  fail_mode: closed
+  signals:
+    reasoning: true
+    intent: true
+    action: true
+  runtime:
+    evaluate_before_every_tool: true
+    require_trusted_goal: true
+    audit_missing_signals: true
+  enforcement:
+    block_on_sentinel_block: true
+    review_requires_action_gate_verification: true
+```
+
+When enabled in the protected tool path:
+
+```text
+Layer 0 tool validation
+  -> Sentinel evaluation
+  -> Action Gate authorization
+  -> tool execution
+```
+
+Layer 0 blocks short-circuit before Sentinel. Sentinel `block` can prevent automatic tool execution when `block_on_sentinel_block` is true. Action Gate remains the final authorization component for non-blocked Sentinel decisions.
+
 ## Performance
 
 Run the deterministic Sentinel micro-benchmark:
@@ -116,6 +147,12 @@ python evaluation/sentinel/benchmark_sentinel.py
 
 This benchmark uses an injected fake embedder. It does not measure sentence-transformer model latency.
 
+Run local smoke scenarios:
+
+```bash
+python evaluation/sentinel/smoke_sentinel_integration.py
+```
+
 ## Remaining Runtime Integration Work
 
-Future stages may feed Sentinel decisions into audit logs, dashboards, or Action Gate context. This stage intentionally does not integrate Sentinel into the middleware execution path.
+Future stages may feed Sentinel decisions into richer dashboards, live Qwen evaluation reports, or AgentDojo-style benchmark comparisons.

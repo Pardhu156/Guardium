@@ -32,9 +32,11 @@ class ToolCallState:
 class SentinelExecutionState:
     """Structured execution object consumed by Sentinel."""
 
+    session_id: str | None = None
     reasoning: str | None = None
     current_intent: str | None = None
     tool_call: ToolCallState | None = None
+    step_index: int | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

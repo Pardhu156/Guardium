@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from aegisvault.agent_runtime.ollama_client import OllamaChatClient
-from aegisvault.agent_runtime.parser import ParsedToolCall, parse_tool_calls
+from aegisvault.agent_runtime.parser import ParsedToolCall, extract_reasoning, parse_tool_calls
 from aegisvault.agent_runtime.tools import ToolExecutionRecord, ToolRegistry
 from aegisvault.agent_runtime.tracing import AgentTrace, JsonlTraceLogger, utc_now
 
@@ -57,9 +57,14 @@ class AgentRuntime:
             trace.add_event("model_request", payload={"round": round_index, "messages": _redact_messages(messages)})
             chat_result = self.client.chat(messages=messages, tools=self.tools.to_ollama_tools())
             message = chat_result.payload.get("message", {})
+            qwen_reasoning = extract_reasoning(message)
             trace.add_event(
                 "model_response",
-                payload={"round": round_index, "message": message},
+                payload={
+                    "round": round_index,
+                    "message": message,
+                    "reasoning_available": qwen_reasoning is not None,
+                },
                 latency_ms=chat_result.latency_ms,
             )
             trace.token_usage = _extract_usage(chat_result.payload)

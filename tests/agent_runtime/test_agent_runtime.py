@@ -10,7 +10,7 @@ from aegisvault.agent_runtime import AgentRuntime, default_tool_registry
 from aegisvault.agent_runtime.exceptions import ToolRegistryError
 from aegisvault.agent_runtime.mock_tools import calculator, clear_notes, list_notes, save_note
 from aegisvault.agent_runtime.ollama_client import OllamaChatResult
-from aegisvault.agent_runtime.parser import parse_tool_calls
+from aegisvault.agent_runtime.parser import extract_reasoning, parse_tool_calls
 from aegisvault.agent_runtime.tools import ToolDefinition, ToolRegistry
 
 
@@ -75,6 +75,18 @@ def test_native_tool_call_parser() -> None:
 def test_json_fallback_tool_call_parser() -> None:
     calls = parse_tool_calls({"content": '{"tool_calls":[{"name":"echo","arguments":{"text":"hi"}}]}'})
     assert calls[0].name == "echo"
+
+
+def test_tool_call_parser_extracts_current_intent_and_qwen_reasoning() -> None:
+    calls = parse_tool_calls(
+        {
+            "content": '{"tool_calls":[{"name":"echo","current_intent":"Echo a greeting","arguments":{"text":"hi"}}]}',
+            "reasoning_content": "I should echo the greeting.",
+        }
+    )
+    assert calls[0].current_intent == "Echo a greeting"
+    assert extract_reasoning({"reasoning_content": "I should echo the greeting."}) == "I should echo the greeting."
+    assert extract_reasoning({"content": "normal text"}) is None
 
 
 def test_json_scalar_content_is_not_a_tool_call() -> None:

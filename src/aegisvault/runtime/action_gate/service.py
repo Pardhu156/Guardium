@@ -7,12 +7,13 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import wraps
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from aegisvault.audit import AuditSink, NullAuditSink
 from aegisvault.layer0 import Layer0Validator
 from aegisvault.policy.models import DomainPolicy
+from aegisvault.policy.models import SentinelFailMode
 from aegisvault.runtime.action_gate.cosine import cosine_similarity
 from aegisvault.runtime.action_gate.evaluators import ActionEvaluator, OllamaActionEvaluator
 from aegisvault.runtime.action_gate.exceptions import ActionEvaluatorError
@@ -29,6 +30,9 @@ from aegisvault.runtime.action_gate.models import (
     thaw_mapping,
 )
 from aegisvault.runtime.goal_vault import GoalEmbedder, GoalVault, l2_normalize
+
+if TYPE_CHECKING:
+    from aegisvault.sentinel import SentinelDecision, SentinelMonitor
 
 
 class ActionGate:
@@ -198,11 +202,17 @@ class ActionGate:
         tool_description: str | None = None,
         layer0_validator: Layer0Validator | None = None,
         tool_catalog: dict[str, Any] | None = None,
+        sentinel_monitor: SentinelMonitor | None = None,
     ) -> Callable[..., ToolExecutionResult]:
         """Wrap a synchronous Python callable so Action Gate runs before execution."""
 
         resolved_name = tool_name or getattr(tool, "__name__", tool.__class__.__name__)
         resolved_description = tool_description or getattr(tool, "__doc__", None) or resolved_name
+        resolved_sentinel = sentinel_monitor
+        if resolved_sentinel is None and policy.sentinel.enabled:
+            from aegisvault.sentinel import SentinelMonitor
+
+            resolved_sentinel = SentinelMonitor(embedder=self.embedder, config=_sentinel_config_from_policy(policy))
 
         @wraps(tool)
         def protected_tool(
@@ -247,12 +257,76 @@ class ActionGate:
                     )
                     self._audit(decision)
                     return ToolExecutionResult(decision=decision, executed=False)
+            sentinel_decision: SentinelDecision | None = None
+            if resolved_sentinel is not None and policy.sentinel.enabled and policy.sentinel.runtime.evaluate_before_every_tool:
+                try:
+                    from aegisvault.sentinel import SentinelDecisionLevel, SentinelExecutionState, ToolCallState
+
+                    goal_anchor = self.goal_vault.get_anchor(session_id)
+                    execution = SentinelExecutionState(
+                        session_id=session_id,
+                        reasoning=(runtime_context.qwen_reasoning if runtime_context else None)
+                        if policy.sentinel.signals.reasoning
+                        else None,
+                        current_intent=((runtime_context.current_intent if runtime_context else None) or resolved_description)
+                        if policy.sentinel.signals.intent
+                        else None,
+                        tool_call=ToolCallState(name=resolved_name, arguments=action.tool_arguments)
+                        if policy.sentinel.signals.action
+                        else None,
+                        step_index=runtime_context.step_index if runtime_context else None,
+                    )
+                    sentinel_decision = resolved_sentinel.analyze(
+                        session_id=session_id,
+                        trusted_goal=goal_anchor.original_goal,
+                        execution=execution,
+                    )
+                    self._audit_sentinel(
+                        "sentinel.evaluated",
+                        session_id=session_id,
+                        tool_name=resolved_name,
+                        sentinel_decision=sentinel_decision,
+                        step_index=runtime_context.step_index if runtime_context else None,
+                    )
+                    if policy.sentinel.runtime.audit_missing_signals:
+                        missing = _missing_sentinel_signals(sentinel_decision)
+                        if missing:
+                            self._audit_sentinel(
+                                "sentinel.signal_missing",
+                                session_id=session_id,
+                                tool_name=resolved_name,
+                                sentinel_decision=sentinel_decision,
+                                step_index=runtime_context.step_index if runtime_context else None,
+                                metadata={"missing_signals": missing},
+                            )
+                    if (
+                        sentinel_decision.decision == SentinelDecisionLevel.BLOCK
+                        and policy.sentinel.enforcement.block_on_sentinel_block
+                    ):
+                        decision = _sentinel_block_decision(session_id, action, sentinel_decision)
+                        self._audit_sentinel(
+                            "sentinel.blocked",
+                            session_id=session_id,
+                            tool_name=resolved_name,
+                            sentinel_decision=sentinel_decision,
+                            step_index=runtime_context.step_index if runtime_context else None,
+                        )
+                        self._audit(decision)
+                        return ToolExecutionResult(decision=decision, executed=False)
+                except Exception as exc:
+                    self._audit_sentinel_error(session_id=session_id, tool_name=resolved_name, exc=exc)
+                    if policy.sentinel.fail_mode == SentinelFailMode.CLOSED:
+                        decision = _sentinel_error_decision(session_id, action, exc)
+                        self._audit(decision)
+                        return ToolExecutionResult(decision=decision, executed=False)
+
+            runtime_context_for_gate = _context_with_sentinel(runtime_context, sentinel_decision)
             decision = self.evaluate_action(
                 session_id=session_id,
                 action=action,
                 tool_metadata=tool_metadata,
                 policy=policy,
-                runtime_context=runtime_context,
+                runtime_context=runtime_context_for_gate,
             )
             if decision.verdict != ActionVerdict.EXECUTE:
                 return ToolExecutionResult(decision=decision, executed=False)
@@ -306,6 +380,55 @@ class ActionGate:
         except Exception:
             return None
 
+    def _audit_sentinel(
+        self,
+        event_type: str,
+        *,
+        session_id: str,
+        tool_name: str,
+        sentinel_decision: SentinelDecision,
+        step_index: int | None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        available = set(sentinel_decision.metadata.get("available_monitors", []))
+        event = {
+            "event_id": str(uuid4()),
+            "timestamp": datetime.now(UTC).isoformat(),
+            "event_type": event_type,
+            "session_id": session_id,
+            "step_index": step_index,
+            "tool": tool_name,
+            "reasoning_signal_available": "reasoning" in available,
+            "intent_signal_available": "intent" in available,
+            "action_signal_available": "action" in available,
+            "reasoning_drift": sentinel_decision.reasoning_drift,
+            "intent_drift": sentinel_decision.intent_drift,
+            "action_drift": sentinel_decision.action_drift,
+            "fused_risk": sentinel_decision.fused_risk,
+            "ema_risk": sentinel_decision.ema_risk,
+            "confidence": sentinel_decision.confidence,
+            "sentinel_decision": sentinel_decision.decision.value,
+            "metadata": metadata or {},
+        }
+        try:
+            self.audit_sink.record(event)
+        except Exception:
+            return None
+
+    def _audit_sentinel_error(self, *, session_id: str, tool_name: str, exc: Exception) -> None:
+        event = {
+            "event_id": str(uuid4()),
+            "timestamp": datetime.now(UTC).isoformat(),
+            "event_type": "sentinel.error",
+            "session_id": session_id,
+            "tool": tool_name,
+            "error_type": exc.__class__.__name__,
+        }
+        try:
+            self.audit_sink.record(event)
+        except Exception:
+            return None
+
 
 def build_action_embedding_text(
     *,
@@ -339,6 +462,9 @@ def build_action_embedding_text(
         "runtime_context": {
             "reasoning_summary": runtime_context.reasoning_summary if runtime_context else None,
             "previous_approved_action": runtime_context.previous_approved_action if runtime_context else None,
+            "current_intent": runtime_context.current_intent if runtime_context else None,
+            "step_index": runtime_context.step_index if runtime_context else None,
+            "sentinel_decision": _sentinel_summary(runtime_context.sentinel_decision if runtime_context else None),
             "session_metadata": thaw_mapping(runtime_context.session_metadata) if runtime_context else {},
         },
         "policy": {
@@ -350,6 +476,90 @@ def build_action_embedding_text(
         },
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _sentinel_config_from_policy(policy: DomainPolicy) -> SentinelConfig:
+    from aegisvault.sentinel import SentinelConfig
+
+    return SentinelConfig(
+        reasoning_weight=policy.sentinel.reasoning_weight,
+        intent_weight=policy.sentinel.intent_weight,
+        action_weight=policy.sentinel.action_weight,
+        ema_alpha=policy.sentinel.ema_alpha,
+        allow_threshold=policy.sentinel.allow_threshold,
+        observe_threshold=policy.sentinel.observe_threshold,
+        review_threshold=policy.sentinel.review_threshold,
+    )
+
+
+def _context_with_sentinel(
+    runtime_context: ActionRuntimeContext | None,
+    sentinel_decision: SentinelDecision | None,
+) -> ActionRuntimeContext | None:
+    if sentinel_decision is None:
+        return runtime_context
+    metadata = thaw_mapping(runtime_context.session_metadata) if runtime_context else {}
+    metadata["sentinel"] = _sentinel_summary(sentinel_decision)
+    return ActionRuntimeContext(
+        reasoning_summary=runtime_context.reasoning_summary if runtime_context else None,
+        previous_approved_action=runtime_context.previous_approved_action if runtime_context else None,
+        qwen_reasoning=runtime_context.qwen_reasoning if runtime_context else None,
+        current_intent=runtime_context.current_intent if runtime_context else None,
+        step_index=runtime_context.step_index if runtime_context else None,
+        sentinel_decision=sentinel_decision,
+        session_metadata=metadata,
+    )
+
+
+def _sentinel_summary(decision: SentinelDecision | None) -> dict[str, Any] | None:
+    if decision is None:
+        return None
+    available = decision.metadata.get("available_monitors", [])
+    return {
+        "decision": decision.decision.value,
+        "fused_risk": decision.fused_risk,
+        "ema_risk": decision.ema_risk,
+        "confidence": decision.confidence,
+        "available_signals": list(available) if isinstance(available, list | tuple) else [],
+        "reason": decision.reason,
+    }
+
+
+def _missing_sentinel_signals(decision: SentinelDecision) -> list[str]:
+    available = set(decision.metadata.get("available_monitors", []))
+    return [name for name in ("reasoning", "intent", "action") if name not in available]
+
+
+def _sentinel_block_decision(session_id: str, action: ProposedToolAction, sentinel_decision: SentinelDecision) -> ActionGateDecision:
+    return ActionGateDecision(
+        tool_name=action.tool_name,
+        tool_arguments=action.tool_arguments,
+        goal_similarity=None,
+        decision_source=ActionDecisionSource.FALLBACK,
+        verdict=ActionVerdict.BLOCK,
+        confidence=sentinel_decision.confidence,
+        reason=f"Sentinel blocked automatic tool execution: {sentinel_decision.reason}",
+        latency_ms=0.0,
+        ollama_called=False,
+        goal_session=session_id,
+        metadata={"sentinel": _sentinel_summary(sentinel_decision), "blocked_by": "sentinel"},
+    )
+
+
+def _sentinel_error_decision(session_id: str, action: ProposedToolAction, exc: Exception) -> ActionGateDecision:
+    return ActionGateDecision(
+        tool_name=action.tool_name,
+        tool_arguments=action.tool_arguments,
+        goal_similarity=None,
+        decision_source=ActionDecisionSource.FALLBACK,
+        verdict=ActionVerdict.BLOCK,
+        confidence=None,
+        reason=f"Sentinel failed closed before tool execution: {exc.__class__.__name__}",
+        latency_ms=0.0,
+        ollama_called=False,
+        goal_session=session_id,
+        metadata={"blocked_by": "sentinel_error", "error_type": exc.__class__.__name__},
+    )
 
 
 def _forced_metadata_decision(

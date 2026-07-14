@@ -192,6 +192,28 @@ def test_destination_rules() -> None:
     assert validator().validate_tool_call(session_id="s1", tool_name="send_email", arguments={"to": "attacker@example.com"}).rule_id == "L0_TOOL_EXTERNAL_DESTINATION"
 
 
+def test_schema_and_destination_rules_understand_protected_tool_kwargs_shape() -> None:
+    catalog = {"send_email": {"parameters": {"type": "object", "required": ["to"], "properties": {"to": {"type": "string"}}}}}
+    assert validator().validate_tool_call(
+        session_id="s1",
+        tool_name="send_email",
+        arguments={"args": [], "kwargs": {"to": "manager@example.com"}},
+        tool_catalog=catalog,
+    ).allowed
+    assert validator().validate_tool_call(
+        session_id="s1",
+        tool_name="send_email",
+        arguments={"args": [], "kwargs": {"to": "attacker@example.com"}},
+        tool_catalog=catalog,
+    ).rule_id == "L0_TOOL_EXTERNAL_DESTINATION"
+    assert validator().validate_tool_call(
+        session_id="s1",
+        tool_name="send_email",
+        arguments={"args": [], "kwargs": {}},
+        tool_catalog=catalog,
+    ).rule_id == "L0_TOOL_SCHEMA_INVALID"
+
+
 def test_tool_arguments_are_not_mutated() -> None:
     args = {"nested": {"safe": "value"}}
     validator().validate_tool_call(session_id="s1", tool_name="read_email", arguments=args)

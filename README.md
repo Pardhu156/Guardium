@@ -14,7 +14,7 @@ Stage 4.0 adds an independent local Qwen/Ollama tool-calling runtime validation 
 
 Stage 5.1 adds deterministic Layer 0 request and tool-call validation before expensive semantic checks. See [docs/layer0.md](docs/layer0.md).
 
-Stage 5.2 adds the standalone Sentinel runtime monitor for goal-drift signals. See [docs/sentinel.md](docs/sentinel.md).
+Stage 5.2 adds the Sentinel runtime monitor for goal-drift signals and an optional protected-tool integration hook. See [docs/sentinel.md](docs/sentinel.md).
 
 ## Stage 1 Scope
 
@@ -72,12 +72,12 @@ Stage 5.2 Sentinel runtime signal addition:
 - Weighted risk fusion with unavailable-monitor renormalization
 - Per-session EMA drift tracking
 - Standalone decisions: allow, observe, review, block
-- No runtime orchestration integration in this stage
+- Optional protected-tool integration before Action Gate when explicitly enabled
 
 Deferred to later stages:
 
 - EMA or adaptive scoring
-- Sentinel Monitor
+- Sentinel dashboards and live benchmark reporting
 - Continuous semantic drift scoring
 - LangChain integrations
 - Web APIs, UI, Docker, and deployment code

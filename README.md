@@ -334,6 +334,21 @@ python evaluation/agent_runtime/scripts/run_email_agent_evaluation.py --model qw
 
 Email Agent documentation is in `docs/email_agent.md`. Synthetic threaded email data lives in `datasets/email/`, and reports are written to `reports/email_agent/<run_id>/`.
 
+Run AegisBench v1 Email Security Benchmark:
+
+```bash
+python evaluation/aegisbench/run_aegisbench.py --no-charts
+```
+
+For publication charts, install the evaluation extra and run:
+
+```bash
+pip install -e ".[evaluation]"
+python evaluation/aegisbench/run_aegisbench.py
+```
+
+AegisBench documentation is in `docs/aegisbench_v1.md`. Benchmark cases live in `datasets/benchmarks/aegisbench_v1/`, and reports are written to `reports/aegisbench_v1/<run_id>/`.
+
 Run the optional Ollama integration test only when Ollama is running and the configured model is available:
 
 ```bash

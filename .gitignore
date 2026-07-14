@@ -17,4 +17,8 @@ evaluation/agent_runtime/reports/*
 !evaluation/agent_runtime/reports/.gitkeep
 reports/email_agent/*
 !reports/email_agent/.gitkeep
+reports/aegisbench_v1/*
+!reports/aegisbench_v1/.gitkeep
+reports/aegisbench_live/*
+!reports/aegisbench_live/.gitkeep
 .DS_Store

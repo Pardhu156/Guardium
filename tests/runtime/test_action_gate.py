@@ -22,7 +22,12 @@ from aegisvault.runtime.action_gate import (
     build_action_embedding_text,
     cosine_similarity,
 )
-from aegisvault.runtime.action_gate.exceptions import ActionEvaluatorError, ActionGateValidationError
+from aegisvault.runtime.action_gate.evaluators import OllamaActionEvaluator
+from aegisvault.runtime.action_gate.exceptions import (
+    ActionEvaluatorError,
+    ActionGateValidationError,
+    MalformedActionEvaluatorResponseError,
+)
 from aegisvault.runtime.goal_vault import GoalAnchor, GoalEmbedder, GoalVault, InMemoryGoalVaultBackend
 from aegisvault.runtime.goal_vault import GoalBackendUnavailableError
 
@@ -503,6 +508,39 @@ def test_tool_metadata_validation() -> None:
 def test_config_validation() -> None:
     with pytest.raises(ActionGateValidationError):
         ActionGateConfig(high_similarity=0.2, low_similarity=0.3)
+
+
+def test_action_evaluator_repairs_missing_reason() -> None:
+    evaluator = OllamaActionEvaluator(model="fake")
+
+    output, metadata = evaluator._parse_model_json('{"verdict":"EXECUTE","confidence":0.88}')
+
+    assert output.verdict == ActionVerdict.EXECUTE
+    assert output.confidence == pytest.approx(0.88)
+    assert output.reason
+    assert metadata["output_repaired"] is True
+    assert metadata["repair_reason"] == "missing_reason"
+
+
+def test_action_evaluator_invalid_verdict_still_rejected() -> None:
+    evaluator = OllamaActionEvaluator(model="fake")
+
+    with pytest.raises(MalformedActionEvaluatorResponseError):
+        evaluator._parse_model_json('{"verdict":"ALLOW","confidence":0.88}')
+
+
+def test_action_evaluator_invalid_confidence_still_rejected() -> None:
+    evaluator = OllamaActionEvaluator(model="fake")
+
+    with pytest.raises(MalformedActionEvaluatorResponseError):
+        evaluator._parse_model_json('{"verdict":"EXECUTE","confidence":1.4}')
+
+
+def test_action_evaluator_does_not_repair_extra_malformed_fields() -> None:
+    evaluator = OllamaActionEvaluator(model="fake")
+
+    with pytest.raises(MalformedActionEvaluatorResponseError):
+        evaluator._parse_model_json('{"verdict":"EXECUTE","confidence":0.88,"extra":"not allowed"}')
 
 
 def test_cosine_similarity_validation() -> None:

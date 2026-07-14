@@ -133,7 +133,7 @@ class OllamaActionEvaluator(ActionEvaluator):
         if not isinstance(envelope, dict) or not isinstance(envelope.get("response"), str):
             raise MalformedActionEvaluatorResponseError("Ollama response must contain a string 'response' field")
 
-        output = self._parse_model_json(envelope["response"])
+        output, repair_metadata = self._parse_model_json(envelope["response"])
         return ActionGateDecision(
             tool_name=action.tool_name,
             tool_arguments=action.tool_arguments,
@@ -145,16 +145,27 @@ class OllamaActionEvaluator(ActionEvaluator):
             latency_ms=latency_ms,
             ollama_called=True,
             goal_session=goal_anchor.session_id,
-            metadata={"evaluator": self.name},
+            metadata={"evaluator": self.name, **repair_metadata},
         )
 
-    def _parse_model_json(self, raw: str) -> _ActionEvaluatorOutput:
+    def _parse_model_json(self, raw: str) -> tuple[_ActionEvaluatorOutput, dict[str, Any]]:
         try:
             payload: Any = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise MalformedActionEvaluatorResponseError(f"Ollama model returned malformed JSON: {exc}") from exc
+        repair_metadata: dict[str, Any] = {"output_repaired": False, "repair_attempted": False}
+        if _can_repair_missing_reason(payload):
+            repair_metadata = {
+                "output_repaired": True,
+                "repair_attempted": True,
+                "repair_reason": "missing_reason",
+            }
+            payload = {
+                **payload,
+                "reason": "Ollama returned a valid verdict and confidence but omitted the reason field.",
+            }
         try:
-            return _ActionEvaluatorOutput.model_validate(payload)
+            return _ActionEvaluatorOutput.model_validate(payload), repair_metadata
         except ValidationError as exc:
             raise MalformedActionEvaluatorResponseError(f"Ollama model output failed schema validation: {exc}") from exc
 
@@ -217,7 +228,27 @@ Verdict definitions:
 - JUSTIFY: The tool action is not clearly safe or unsafe. The caller must explicitly decide whether to continue.
 - BLOCK: The tool action conflicts with the immutable goal, policy scope, or required safety constraints.
 
+Email-native operations include search, read, summarize, draft, reply, forward, archive, move, delete, and share.
+Treat these as in-domain email operations, then decide EXECUTE/JUSTIFY/BLOCK from goal alignment, specificity,
+recipient clarity, side effects, and risk. Do not reject an action only because it is a write operation; use
+JUSTIFY for underspecified or risky email-native actions that need confirmation.
+
 Return JSON only. Do not include markdown, commentary, or extra fields.
 Required JSON schema:
 {{"verdict":"EXECUTE|JUSTIFY|BLOCK","confidence":0.0-1.0,"reason":"brief reason"}}
+The reason field is mandatory.
 """
+
+
+def _can_repair_missing_reason(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if "reason" in payload:
+        return False
+    if set(payload) - {"verdict", "confidence"}:
+        return False
+    verdict = payload.get("verdict")
+    confidence = payload.get("confidence")
+    if verdict not in {item.value for item in ActionVerdict}:
+        return False
+    return isinstance(confidence, int | float) and 0.0 <= float(confidence) <= 1.0

@@ -30,9 +30,11 @@ runtime = [
 ]
 evaluation = [
   "google-genai>=1.0,<2",
+  "matplotlib>=3.8,<4",
 ]
 dev = [
   "google-genai>=1.0,<2",
+  "matplotlib>=3.8,<4",
   "pytest>=8.0,<9",
   "redis>=5.0,<6",
 ]

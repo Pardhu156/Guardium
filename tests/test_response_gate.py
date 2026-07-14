@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from aegisvault.gates import ResponseGate
+from aegisvault.policy import load_policy
 from aegisvault.policy.models import DomainPolicy
 from aegisvault.types import GateType, Verdict
 
@@ -31,3 +32,15 @@ def test_response_gate_replacement(policy_dict) -> None:
     result = ResponseGate(policy, evaluator).evaluate("Maybe related.")
 
     assert result.verdict == Verdict.REPLACE
+
+
+def test_valid_drafted_email_passes_response_gate() -> None:
+    policy = load_policy("evaluation/policies/email_assistant.yaml")
+    evaluator = FakeEvaluator([decision(Verdict.ALLOW, 0.92, GateType.RESPONSE)])
+
+    result = ResponseGate(policy, evaluator).evaluate(
+        "Draft: Hi Maya, thanks for the update. I will review the invoice and reply by Friday."
+    )
+
+    assert result.verdict == Verdict.ALLOW
+    assert len(evaluator.calls) == 1

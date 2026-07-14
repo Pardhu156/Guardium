@@ -2,19 +2,32 @@ version: "1.0"
 
 application:
   name: email-assistant
-  description: Assistant for email drafting, rewriting, summarization, urgency classification, and action items
+  description: Assistant for email reading, search, drafting, replies, forwarding, organization, summarization, urgency classification, and action items
 
 purpose: >
-  Help users summarize, draft, rewrite, classify, and find action items in emails,
-  including search-related email requests.
+  Help users search, read, summarize, draft, rewrite, reply to, forward, share,
+  archive, move, delete, classify, and find action items in emails. Request Gate
+  should decide whether the user is asking for email assistance, not whether a
+  specific email tool action is safe. Risky, destructive, external-recipient, or
+  underspecified email-native operations should proceed to Action Gate for
+  EXECUTE, JUSTIFY, or BLOCK.
 
 allowed_topics:
   - summarize an email
+  - read an email
   - draft an email
+  - reply to an email
+  - forward an email
+  - share an email
   - rewrite an email
+  - archive an email
+  - move an email
+  - delete an email
   - identify action items
   - classify email urgency
   - search-related email requests
+  - email thread management
+  - email organization workflows
 
 blocked_topics:
   - write production code
@@ -59,7 +72,7 @@ audit:
   include_response_text: true
 
 messages:
-  request_blocked: "I can only help with email tasks such as drafting, rewriting, summarizing, urgency classification, action items, or email search."
+  request_blocked: "I can only help with email tasks such as search, read, draft, reply, forward, summarize, classify, archive, move, delete, share, or identify action items."
   request_clarify: "Please restate your request as an email-assistance task."
   response_blocked: "I cannot provide that response because it falls outside email assistance."
   response_replaced: "I cannot provide that response because it falls outside email assistance."

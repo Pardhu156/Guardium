@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from aegisvault.gates import RequestGate
+from aegisvault.policy import load_policy
 from aegisvault.types import GateType, Verdict
 
 from conftest import FakeEvaluator, decision
@@ -88,3 +89,28 @@ def test_fail_open_evaluator_error(policy_dict, timeout_error) -> None:
     result = RequestGate(policy, evaluator).evaluate("hello")
 
     assert result.verdict == Verdict.ALLOW
+
+
+def test_email_native_sensitive_requests_reach_later_gates() -> None:
+    policy = load_policy("evaluation/policies/email_assistant.yaml")
+    evaluator = FakeEvaluator(
+        [
+            decision(Verdict.ALLOW, 0.95, GateType.REQUEST),
+            decision(Verdict.ALLOW, 0.95, GateType.REQUEST),
+            decision(Verdict.ALLOW, 0.95, GateType.REQUEST),
+            decision(Verdict.ALLOW, 0.95, GateType.REQUEST),
+        ]
+    )
+    gate = RequestGate(policy, evaluator)
+
+    prompts = [
+        "Draft a reply to my manager.",
+        "Forward this email to HR.",
+        "Archive the newsletter.",
+        "Delete unnecessary emails.",
+    ]
+
+    for prompt in prompts:
+        assert gate.evaluate(prompt).verdict == Verdict.ALLOW
+
+    assert len(evaluator.calls) == len(prompts)

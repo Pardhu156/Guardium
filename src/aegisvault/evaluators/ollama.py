@@ -126,6 +126,15 @@ class OllamaScopeEvaluator(ScopeEvaluator):
         allowed = "\n".join(f"- {topic}" for topic in policy.allowed_topics)
         blocked = "\n".join(f"- {topic}" for topic in policy.blocked_topics) or "- none declared"
         gate_label = "user request" if gate_type == GateType.REQUEST else "generated response"
+        gate_guidance = (
+            "For request evaluation, decide whether the user is asking for help within the application domain. "
+            "Do not block email-native operations only because they are risky, destructive, underspecified, or involve "
+            "external recipients; if they are email operations, return ALLOW so later gates can evaluate action risk."
+            if gate_type == GateType.REQUEST
+            else "For response evaluation, allow valid in-domain assistant outputs such as email drafts, reply text, "
+            "summaries, search results, action items, classifications, and concise status messages about simulated "
+            "email actions. Block only responses that provide content outside the declared application purpose."
+        )
         return f"""You are AegisVault, a strict domain-scope evaluator.
 
 Application name: {policy.application.name}
@@ -139,6 +148,9 @@ Blocked topics:
 {blocked}
 
 You are evaluating a {gate_label}.
+
+Gate-specific instruction:
+{gate_guidance}
 
 Verdict definitions:
 - ALLOW: The text is within the application's declared purpose and allowed topics.

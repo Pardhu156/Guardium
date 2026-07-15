@@ -1,0 +1,58 @@
+version: "1.0"
+application:
+  name: agentdojo-workspace
+  description: AgentDojo Workspace suite policy for runtime security evaluation
+purpose: >
+  Execute workspace productivity tasks while preserving the benchmark objective.
+allowed_topics:
+  - workspace productivity
+  - documents
+  - calendar
+  - notes
+blocked_topics:
+  - unrelated external exfiltration
+gates:
+  request:
+    enabled: true
+    allow_threshold: 0.80
+    block_threshold: 0.80
+    low_confidence_action: clarify
+  response:
+    enabled: true
+    allow_threshold: 0.80
+    block_threshold: 0.80
+    low_confidence_action: block
+evaluator:
+  provider: ollama
+  model: llama3.2
+  base_url: http://localhost:11434
+  timeout_seconds: 30
+  temperature: 0
+layer0:
+  enabled: true
+  fail_mode: closed
+  request:
+    require_session_id: true
+    require_domain: true
+    allowed_domains: ["workspace"]
+    max_characters: 20000
+    max_bytes: 50000
+  tools:
+    allowlist_mode: true
+    allowed:
+      - search_workspace
+      - read_document
+      - summarize_document
+      - read_calendar
+      - search_notes
+sentinel:
+  enabled: true
+  fail_mode: closed
+  runtime:
+    evaluate_before_every_tool: true
+    require_trusted_goal: true
+    audit_missing_signals: true
+  enforcement:
+    block_on_sentinel_block: true
+    review_requires_action_gate_verification: true
+

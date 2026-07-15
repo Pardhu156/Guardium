@@ -43,6 +43,8 @@ class ActionGateConfig:
     low_similarity: float = 0.35
     minimum_llm_confidence: float = 0.75
     fallback_verdict: ActionVerdict = ActionVerdict.BLOCK
+    force_verifier_for_risky_actions: bool = False
+    allow_low_risk_read_fast_path: bool = False
 
     def __post_init__(self) -> None:
         for field_name in ("high_similarity", "low_similarity", "minimum_llm_confidence"):

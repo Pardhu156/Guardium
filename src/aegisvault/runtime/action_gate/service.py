@@ -86,7 +86,13 @@ class ActionGate:
             self._audit(decision)
             return decision
 
-        if similarity >= self.config.high_similarity:
+        force_verifier = self.config.force_verifier_for_risky_actions and _is_risky_action(tool_metadata)
+        read_fast_path = (
+            self.config.allow_low_risk_read_fast_path
+            and _is_low_risk_read_action(tool_metadata)
+            and similarity > self.config.low_similarity
+        )
+        if (similarity >= self.config.high_similarity and not force_verifier) or read_fast_path:
             policy_override = _forced_metadata_decision(
                 session_id=goal_anchor.session_id,
                 action=action,
@@ -104,11 +110,18 @@ class ActionGate:
                 decision_source=ActionDecisionSource.COSINE,
                 verdict=ActionVerdict.EXECUTE,
                 confidence=similarity,
-                reason="Goal/action cosine similarity met the high execute threshold.",
+                reason=(
+                    "Low-risk read-only action used the configured cosine fast path."
+                    if read_fast_path
+                    else "Goal/action cosine similarity met the high execute threshold."
+                ),
                 latency_ms=(time.perf_counter() - started) * 1000,
                 ollama_called=False,
                 goal_session=goal_anchor.session_id,
-                metadata={"threshold": self.config.high_similarity, "threshold_type": "high_similarity"},
+                metadata={
+                    "threshold": self.config.low_similarity if read_fast_path else self.config.high_similarity,
+                    "threshold_type": "low_risk_read_fast_path" if read_fast_path else "high_similarity",
+                },
             )
             self._audit(decision)
             return decision
@@ -523,6 +536,23 @@ def _sentinel_summary(decision: SentinelDecision | None) -> dict[str, Any] | Non
         "available_signals": list(available) if isinstance(available, list | tuple) else [],
         "reason": decision.reason,
     }
+
+
+def _is_risky_action(tool_metadata: ToolMetadata) -> bool:
+    risk = tool_metadata.risk_level.strip().lower()
+    return (
+        tool_metadata.side_effect_level != SideEffectLevel.READ
+        or tool_metadata.requires_approval
+        or risk in {"medium", "high", "critical"}
+    )
+
+
+def _is_low_risk_read_action(tool_metadata: ToolMetadata) -> bool:
+    return (
+        tool_metadata.side_effect_level == SideEffectLevel.READ
+        and not tool_metadata.requires_approval
+        and tool_metadata.risk_level.strip().lower() in {"low", "read", "readonly", "read_only"}
+    )
 
 
 def _missing_sentinel_signals(decision: SentinelDecision) -> list[str]:

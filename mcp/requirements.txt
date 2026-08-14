@@ -1,0 +1,4 @@
+# This minimal MCP demo has no extra runtime dependency beyond AegisVault itself.
+# From the repository root, install AegisVault with:
+#   pip install -e .
+

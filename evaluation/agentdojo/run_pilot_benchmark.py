@@ -1,15 +1,17 @@
 """Pilot AgentDojo baseline-vs-protected benchmark for AegisVault.
 
 This stage is measurement only. It does not tune thresholds, modify policies,
-or change AgentDojo. Execution order is always baseline first, then protected.
+or change AgentDojo. Phase order is configured explicitly by the caller.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
+import shutil
 import statistics
 import sys
 import time
@@ -29,13 +31,12 @@ if str(SRC) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline, PipelineConfig, get_llm, load_system_message
+from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline, get_llm, load_system_message
 from agentdojo.agent_pipeline.basic_elements import InitQuery, SystemMessage
 from agentdojo.agent_pipeline.tool_execution import ToolsExecutionLoop, ToolsExecutor
 from agentdojo.attacks.attack_registry import load_attack
 import agentdojo.attacks.baseline_attacks  # noqa: F401 - registers built-in attacks
 from agentdojo.base_tasks import BaseInjectionTask
-from agentdojo.models import ModelsEnum
 from agentdojo.task_suite.load_suites import get_suite
 
 from aegisvault.integrations.agentdojo import AgentDojoAdapterConfig
@@ -46,6 +47,10 @@ from aegisvault.runtime.action_gate import ActionGateConfig, SideEffectLevel, To
 from aegisvault.runtime.action_gate.evaluators import OllamaActionEvaluator
 from aegisvault.runtime.goal_vault import GoalEmbeddingError, GoalVault, InMemoryGoalVaultBackend, SentenceTransformerGoalEmbedder
 from aegisvault.sentinel import SentinelConfig, SentinelDecision, SentinelDecisionLevel, SentinelExecutionState, SentinelMonitor
+from evaluation.agentdojo.reliability import (
+    CaseObserver, CaseTimeout, CheckedLocalLLM, ContextWindowError, ObservedElement, atomic_json, case_deadline, run_lock,
+)
+from evaluation.agentdojo.tool_call_parser import PARSER_REVISION
 
 
 DEFAULT_SUITES = ("workspace", "slack", "banking", "travel")
@@ -118,11 +123,21 @@ class CountingSentinel(SentinelMonitor):
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    if not args.skip_preflight:
-        _preflight(args)
-    embedder_info = _verify_production_embedder()
     run_dir = _resolve_run_dir(args)
     run_dir.mkdir(parents=True, exist_ok=True)
+    with run_lock(run_dir):
+        try:
+            return _main(args, run_dir)
+        except ContextWindowError as exc:
+            print(f"Benchmark stopped: {exc}", file=sys.stderr, flush=True)
+            return 2
+
+
+def _main(args: argparse.Namespace, run_dir: Path) -> int:
+    if not args.skip_preflight:
+        _preflight(args)
+    args._embedder = _production_embedder()
+    embedder_info = _verify_production_embedder(args._embedder)
     cases = select_cases(
         limit=args.limit,
         suites=tuple(args.suites),
@@ -136,8 +151,13 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         benchmark_version=args.benchmark_version,
     )
+    cases = _filter_case_ids(cases, args.case_ids)
     execution_order = _execution_order(args.phase, args.order)
     _write_json(run_dir / "selected_cases.json", {"cases": [_case_record(case) for case in cases]})
+    previous_metadata = run_dir / "run_metadata.json"
+    history = run_dir / "resume_history.jsonl"
+    if previous_metadata.exists() and not history.exists():
+        _append_jsonl(history, json.loads(previous_metadata.read_text(encoding="utf-8")))
     _write_json(
         run_dir / "run_metadata.json",
         {
@@ -159,18 +179,27 @@ def main(argv: list[str] | None = None) -> int:
                 "case_layout": args.case_layout,
                 "selection_strategy": args.selection_strategy,
                 "seed": args.seed,
+                "case_ids": args.case_ids,
             },
             "execution_order": execution_order,
             "phase": args.phase,
             "order": args.order,
             "agent_date_hint": args.agent_date_hint,
             "action_timeout_seconds": args.action_timeout_seconds,
+            "llm_timeout_seconds": args.llm_timeout_seconds,
+            "case_timeout_seconds": args.case_timeout_seconds,
+            "max_output_tokens": args.max_output_tokens,
+            "retry_errors": args.retry_errors,
+            "retry_order": "unfinished-first",
+            "parser_revision": PARSER_REVISION,
+            "observed_ollama_context_tokens": getattr(args, "_ollama_context_tokens", None),
             "embedder": embedder_info,
             "similarity_metric": "cosine",
             "normalization": "GoalVault l2_normalize after raw all-MiniLM embedding",
             "action_gate": _action_config_info(),
         },
     )
+    _append_jsonl(history, json.loads(previous_metadata.read_text(encoding="utf-8")))
     print("AgentDojo pilot plan")
     print(f"Cases: {len(cases)}")
     print(f"Suites: {', '.join(args.suites)}")
@@ -181,6 +210,12 @@ def main(argv: list[str] | None = None) -> int:
         f"normalized={embedder_info['normalized']} similarity={embedder_info['similarity_metric']}"
     )
     print(f"Output: {run_dir}")
+    print(
+        f"Timeouts: Qwen HTTP request={args.llm_timeout_seconds:g}s; "
+        f"whole case={args.case_timeout_seconds:g}s (0 disables). "
+        "A case may contain multiple Qwen requests and tool calls.",
+        flush=True,
+    )
     baseline_rows: list[dict[str, Any]] = []
     protected_rows: list[dict[str, Any]] = []
     for phase in execution_order:
@@ -193,6 +228,17 @@ def main(argv: list[str] | None = None) -> int:
     metrics = _write_reports(run_dir, cases, baseline_rows, protected_rows)
     print(json.dumps(metrics.get("comparison", metrics), indent=2, sort_keys=True))
     return 0
+
+
+def _filter_case_ids(cases: list[PilotCase], case_ids: list[str] | None) -> list[PilotCase]:
+    """Select explicit reproduction IDs without changing their benchmark order."""
+    if case_ids is None:
+        return cases
+    missing = set(case_ids) - {case.case_id for case in cases}
+    if missing:
+        raise ValueError(f"Case IDs not present in the selected benchmark cases: {sorted(missing)}")
+    selected = set(case_ids)
+    return [case for case in cases if case.case_id in selected]
 
 
 def select_cases(
@@ -347,46 +393,118 @@ def _run_phase(phase: Literal["baseline", "protected"], cases: list[PilotCase], 
     phase_path = run_dir / f"{phase}_results.jsonl"
     action_path = run_dir / f"{phase}_action_results.jsonl"
     existing = _read_existing(phase_path)
+    backup = phase_path.with_suffix(".before_recovery.jsonl")
+    if phase_path.exists() and not backup.exists():
+        shutil.copy2(phase_path, backup)
     _rewrite_unique_jsonl(phase_path, existing)
     _rewrite_action_jsonl(action_path, existing.values())
-    rows = list(existing.values())
+    selected_ids = {case.case_id for case in cases}
+    rows = [row for key, row in existing.items() if key in selected_ids]
     started_phase = time.perf_counter()
-    progress = tqdm(cases, desc=f"{phase} AgentDojo", unit="case")
-    for index, case in enumerate(progress, start=1):
-        if case.case_id in existing and args.resume:
-            progress.set_postfix_str(f"skipped existing {case.suite}/{case.case_id}")
-            continue
+    pending = [case for case in cases if not (
+        case.case_id in existing and args.resume
+        and not (args.retry_errors and not _evaluated(existing[case.case_id]))
+    )]
+    if args.resume and args.retry_errors:
+        # Finish untouched cases before revisiting known slow or failed attempts.
+        pending.sort(key=lambda case: case.case_id in existing)
+    deferred = [case.case_id for case in pending if case.case_id in existing and not _evaluated(existing[case.case_id])]
+    _write_json(run_dir / f"{phase}_deferred_cases.json", {"case_ids": deferred, "retry_order": "after unfinished cases"})
+    print(
+        f"Saved: {len(rows)} | evaluated: {sum(_evaluated(row) for row in rows)} "
+        f"| pending attempts: {len(pending)} | runtime failures are excluded from ASR",
+        flush=True,
+    )
+    if deferred:
+        print(f"Unfinished first: {len(pending) - len(deferred)} | deferred retries at end: {len(deferred)}", flush=True)
+    retry_ids = set(deferred)
+    new_attempts = len(pending) - len(deferred)
+    showing_retries = new_attempts == 0 and bool(deferred)
+    progress = tqdm(
+        total=len(deferred) if showing_retries else new_attempts,
+        initial=0,
+        desc=f"{phase} AgentDojo {'retries' if showing_retries else 'new cases'}",
+        unit="case",
+    )
+    for attempt_index, case in enumerate(pending, start=1):
+        if case.case_id in retry_ids and not showing_retries:
+            progress.close()
+            showing_retries = True
+            progress = tqdm(total=len(deferred), initial=0, desc=f"{phase} AgentDojo retries", unit="case")
+        was_saved = case.case_id in existing
+        configuration_failure: ContextWindowError | None = None
         started = time.perf_counter()
+        observer = CaseObserver(run_dir, phase, case.case_id, args.heartbeat_seconds)
+        args._observer = observer
+        args._middleware_counts = {}
         try:
-            row = _run_case(phase, case, args)
-        except Exception as exc:
+            with observer, case_deadline(args.case_timeout_seconds):
+                row = _run_case(phase, case, args)
+                row["status"] = "completed"
+        except (Exception, CaseTimeout) as exc:
+            if isinstance(exc, ContextWindowError):
+                configuration_failure = exc
             row = {
                 "phase": phase,
                 "case_id": case.case_id,
                 "suite": case.suite,
+                "user_task_id": case.user_task_id,
+                "injection_task_id": case.injection_task_id,
+                "attack": case.attack,
                 "case_type": case.case_type,
-                "utility": False,
-                "injection_success": False,
-                "security": False,
+                "status": "runtime_failure",
+                "utility": None,
+                "injection_success": None,
+                "security": None,
+                "middleware": args._middleware_counts,
                 "error": f"{exc.__class__.__name__}: {exc}",
             }
+            if configuration_failure is not None:
+                row["failure_category"] = "infrastructure_context_limit"
+                row["prompt_tokens"] = configuration_failure.prompt_tokens
+                row["context_tokens"] = configuration_failure.context_tokens
+        except KeyboardInterrupt:
+            progress.close()
+            print("Interrupted. Finished cases are saved; this unfinished case will run on resume.", flush=True)
+            raise
+        finally:
+            args._observer = None
         row["latency_ms"] = (time.perf_counter() - started) * 1000
-        _append_jsonl(phase_path, row)
-        _append_action_rows(action_path, row)
+        row["parser_revision"] = PARSER_REVISION
+        row["parser_repairs"] = observer.parser_repairs
+        _append_jsonl(run_dir / f"{phase}_attempts.jsonl", row)
         existing[case.case_id] = row
-        rows.append(row)
+        _rewrite_unique_jsonl(phase_path, existing)
+        _rewrite_action_jsonl(action_path, existing.values())
+        rows = [value for key, value in existing.items() if key in selected_ids]
         live_metrics = _phase_metrics(rows)
         _write_json(run_dir / f"{phase}_metrics_live.json", live_metrics)
+        _write_live_summary(run_dir, phase, rows, live_metrics)
         progress.set_postfix(
             {
                 "suite": case.suite,
                 "success": f"{live_metrics['task_success']:.0%}",
-                "ASR": f"{live_metrics['attack_success_rate']:.0%}",
+                "ASR": f"{live_metrics['attack_success_rate']:.2%}" if live_metrics["asr_available"] else "n/a",
                 "avg_ms": f"{live_metrics['average_latency_ms']:.0f}",
+                "errors": live_metrics["runtime_failure_count"],
+                "evaluated": live_metrics["evaluated_cases"],
+                "retry": "yes" if was_saved else "no",
             }
         )
-        if len(rows) % 5 == 0 or index == len(cases):
-            _print_progress(phase, len(rows), len(cases), rows, started_phase, current_suite=case.suite)
+        # This bar counts attempts in this session, not unique saved results.
+        progress.update(1)
+        if attempt_index % 5 == 0 or attempt_index == len(pending):
+            _print_progress(
+                phase, len(rows), len(cases), rows, started_phase, current_suite=case.suite,
+                session_attempts=attempt_index, pending_remaining=len(pending) - attempt_index,
+            )
+        if configuration_failure is not None:
+            progress.close()
+            raise configuration_failure
+    progress.close()
+    live_metrics = _phase_metrics(rows)
+    _write_json(run_dir / f"{phase}_metrics_live.json", live_metrics)
+    _write_live_summary(run_dir, phase, rows, live_metrics)
     return rows
 
 
@@ -400,6 +518,7 @@ def _run_case(phase: Literal["baseline", "protected"], case: PilotCase, args: ar
         reference_pipeline = _baseline_pipeline(args)
         injections = load_attack(case.attack or args.attack, suite, reference_pipeline).attack(user_task, injection_task)
     pipeline, middleware_counts = _pipeline_for_phase(phase, suite, args, case)
+    args._middleware_counts = middleware_counts
     utility, injection_success = suite.run_task_with_pipeline(
         pipeline,
         user_task,
@@ -433,17 +552,23 @@ def _run_case(phase: Literal["baseline", "protected"], case: PilotCase, args: ar
 def _pipeline_for_phase(phase: Literal["baseline", "protected"], suite: Any, args: argparse.Namespace, case: PilotCase) -> tuple[Any, dict[str, Any]]:
     if phase == "baseline":
         return _baseline_pipeline(args), {}
-    embedder = _production_embedder()
+    embedder = getattr(args, "_embedder", None) or _production_embedder()
     policy = _policy_for_suite(case.suite, [tool.name for tool in suite.tools])
     sentinel = CountingSentinel(embedder, _sentinel_config_for_policy(policy))
     goal_vault = GoalVault(backend=InMemoryGoalVaultBackend(), embedder=embedder)
     llm = _llm(args)
     action_traces: list[dict[str, Any]] = []
+    observer = getattr(args, "_observer", None)
     initializer = AegisVaultAgentDojoRequestInitializer(
         policy=policy,
         config=AgentDojoAdapterConfig(suite_name=case.suite, domain=case.suite),
         goal_vault=goal_vault,
     )
+    def record_action(trace: dict[str, Any]) -> None:
+        action_traces.append(trace)
+        if observer:
+            observer.event("tool_decision", trace=trace)
+
     executor = AegisVaultAgentDojoToolsExecutor(
         policy=policy,
         config=AgentDojoAdapterConfig(suite_name=case.suite, domain=case.suite),
@@ -453,15 +578,15 @@ def _pipeline_for_phase(phase: Literal["baseline", "protected"], suite: Any, arg
         action_evaluator=_action_evaluator_for_policy(policy, args),
         action_config=_agentdojo_action_config(),
         tool_metadata_resolver=lambda function, tool_name: _agentdojo_tool_metadata(case.suite, function, tool_name),
-        decision_sink=action_traces.append,
+        decision_sink=record_action,
     )
     pipeline = AgentPipeline(
         [
             SystemMessage(_system_message(args)),
             InitQuery(),
-            initializer,
+            ObservedElement(initializer, observer, "Layer 0 request / Goal Vault"),
             llm,
-            ToolsExecutionLoop([executor, llm]),
+            ToolsExecutionLoop([ObservedElement(executor, observer, "Layer 0 / Sentinel / Action Gate / tool"), llm]),
         ]
     )
     pipeline.name = f"{args.model_id}-aegisvault"
@@ -475,21 +600,21 @@ def _pipeline_for_phase(phase: Literal["baseline", "protected"], suite: Any, arg
 
 
 def _baseline_pipeline(args: argparse.Namespace) -> AgentPipeline:
-    return AgentPipeline.from_config(
-        PipelineConfig(
-            llm=ModelsEnum(args.model),
-            model_id=args.model_id,
-            defense=None,
-            tool_delimiter=args.tool_delimiter,
-            system_message_name=None,
-            system_message=_system_message(args),
-            tool_output_format=args.tool_output_format,
-        )
-    )
+    from functools import partial
+    from agentdojo.agent_pipeline.tool_execution import tool_result_to_str
+
+    llm = _llm(args)
+    formatter = partial(tool_result_to_str, dump_fn=json.dumps) if args.tool_output_format == "json" else tool_result_to_str
+    executor = ObservedElement(ToolsExecutor(formatter), getattr(args, "_observer", None), "baseline tool execution")
+    pipeline = AgentPipeline([SystemMessage(_system_message(args)), InitQuery(), llm, ToolsExecutionLoop([executor, llm])])
+    pipeline.name = args.model
+    return pipeline
 
 
 def _llm(args: argparse.Namespace) -> Any:
-    return get_llm("local", args.model, args.model_id, args.tool_delimiter)
+    llm = get_llm("local", args.model, args.model_id, args.tool_delimiter)
+    checked = CheckedLocalLLM(llm, args.llm_timeout_seconds, args.max_output_tokens, getattr(args, "_observer", None))
+    return ObservedElement(checked, getattr(args, "_observer", None), "Qwen generation")
 
 
 def _system_message(args: argparse.Namespace) -> str:
@@ -517,8 +642,8 @@ def _production_embedder() -> SentenceTransformerGoalEmbedder:
     return SentenceTransformerGoalEmbedder(model_name="all-MiniLM-L6-v2", expected_dimension=384)
 
 
-def _verify_production_embedder() -> dict[str, Any]:
-    embedder = _production_embedder()
+def _verify_production_embedder(embedder: SentenceTransformerGoalEmbedder | None = None) -> dict[str, Any]:
+    embedder = embedder or _production_embedder()
     try:
         vector = embedder.embed("AegisVault AgentDojo production embedder verification")
     except GoalEmbeddingError as exc:
@@ -740,7 +865,14 @@ def _write_reports(run_dir: Path, cases: list[PilotCase], baseline_rows: list[di
     return metrics
 
 
+def _evaluated(row: dict[str, Any]) -> bool:
+    """Historical skips and runtime failures have no valid evaluator outcome."""
+    return not row.get("error") and row.get("status", "completed") == "completed"
+
+
 def _phase_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    attempted = rows
+    rows = [row for row in attempted if _evaluated(row)]
     benign = [row for row in rows if row.get("case_type") == "benign"]
     attacks = [row for row in rows if row.get("case_type") == "attack"]
     successes = [
@@ -749,8 +881,10 @@ def _phase_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if row.get("utility") and (row.get("case_type") != "attack" or not row.get("injection_success", row.get("security", False)))
     ]
     latencies = [float(row.get("latency_ms", 0.0)) for row in rows if row.get("latency_ms") is not None]
-    actions = [trace for row in rows for trace in row.get("middleware", {}).get("action_traces", [])]
+    actions = [trace for row in attempted for trace in row.get("middleware", {}).get("action_traces", [])]
     attack_successes = sum(1 for row in attacks if row.get("injection_success", row.get("security", False)))
+    attempted_attack_count = sum(row.get("case_type") == "attack" for row in attempted)
+    unknown_attack_count = attempted_attack_count - len(attacks)
     middleware_fps = [row for row in benign if not row.get("utility") and _row_has_middleware_block(row)]
     model_utility_failures = [
         row
@@ -758,7 +892,18 @@ def _phase_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if not row.get("utility") and not _row_has_middleware_block(row)
     ]
     return {
-        "cases": len(rows),
+        "cases": len(attempted),
+        "evaluated_cases": len(rows),
+        "evaluated_attack_cases": len(attacks),
+        "attempted_attack_cases": attempted_attack_count,
+        "unevaluated_attack_cases": unknown_attack_count,
+        "attack_evaluation_coverage": _rate(len(attacks), attempted_attack_count),
+        "asr_lower_bound_over_attempted": _rate(attack_successes, attempted_attack_count),
+        "asr_upper_bound_over_attempted": _rate(attack_successes + unknown_attack_count, attempted_attack_count),
+        "runtime_failure_count": len(attempted) - len(rows),
+        "runtime_failure_cases": [row["case_id"] for row in attempted if not _evaluated(row)],
+        "evaluation_coverage": _rate(len(rows), len(attempted)),
+        "asr_available": bool(attacks),
         "task_success": _rate(len(successes), len(rows)),
         "utility": _rate(sum(1 for row in rows if row.get("utility")), len(rows)),
         "benign_task_success": _rate(sum(1 for row in benign if row.get("utility")), len(benign)),
@@ -776,9 +921,9 @@ def _phase_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "average_latency_ms": statistics.fmean(latencies) if latencies else 0.0,
         "action_counts": _action_counts(actions),
         "ollama_action_calls": sum(1 for trace in actions if (trace.get("action_gate") or {}).get("ollama_called")),
-        "sentinel_counts": _sentinel_counts(rows),
+        "sentinel_counts": _sentinel_counts(attempted),
         "failure_breakdown": _failure_breakdown(rows),
-        "per_suite": _per_suite(rows),
+        "per_suite": _per_suite(attempted),
     }
 
 
@@ -788,11 +933,15 @@ def _per_suite(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _phase_metrics_no_suite(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    attempted_count = len(rows)
+    rows = [row for row in rows if _evaluated(row)]
     attacks = [row for row in rows if row.get("case_type") == "attack"]
     benign = [row for row in rows if row.get("case_type") == "benign"]
     middleware_fps = [row for row in benign if not row.get("utility") and _row_has_middleware_block(row)]
     return {
-        "cases": len(rows),
+        "cases": attempted_count,
+        "evaluated_cases": len(rows),
+        "runtime_failure_count": attempted_count - len(rows),
         "utility": _rate(sum(1 for row in rows if row.get("utility")), len(rows)),
         "asr": _rate(sum(1 for row in attacks if row.get("injection_success", row.get("security", False))), len(attacks)),
         "middleware_false_positives": len(middleware_fps),
@@ -818,8 +967,6 @@ def _sentinel_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def _row_has_middleware_block(row: dict[str, Any]) -> bool:
-    if row.get("error"):
-        return True
     traces = row.get("middleware", {}).get("action_traces", [])
     for trace in traces:
         result = str(trace.get("final_result", "")).upper()
@@ -853,14 +1000,19 @@ def _comparison_markdown(metrics: dict[str, Any], baseline_rows: list[dict[str, 
                 "",
                 f"Phase: `{phase_name}`",
                 f"Cases: {phase_metrics['cases']}",
+                f"Evaluated cases: {phase_metrics['evaluated_cases']}",
+                f"Runtime failures / manual skips (excluded from outcome rates): {phase_metrics['runtime_failure_count']}",
+                f"Unevaluated attack cases: {phase_metrics['unevaluated_attack_cases']}",
                 f"Task success: {phase_metrics['task_success']:.2%}",
                 f"Attack Success Rate: {phase_metrics['attack_success_rate']:.2%}",
                 f"IMP: {phase_metrics['imp']:.2%}",
                 f"Tool ASR: {phase_metrics['tool_asr']:.2%}",
                 f"Utility: {phase_metrics['utility']:.2%}",
-                f"Middleware false positives: {phase_metrics['middleware_false_positives']}",
-                f"Model utility failures: {phase_metrics['model_utility_failures']}",
+                f"Candidate middleware false positives: {phase_metrics['middleware_false_positives']}",
+                f"Candidate model utility failures: {phase_metrics['model_utility_failures']}",
                 f"Average latency ms: {phase_metrics['average_latency_ms']:.1f}",
+                "ASR is conditional on evaluated attacks; runtime failures have unknown outcomes. "
+                "Failure attribution above is a trace heuristic pending manual review.",
                 "",
                 "## Cases",
                 "",
@@ -907,11 +1059,28 @@ def _comparison_markdown(metrics: dict[str, Any], baseline_rows: list[dict[str, 
     )
 
 
-def _print_progress(phase: str, completed: int, total: int, rows: list[dict[str, Any]], started: float, *, current_suite: str) -> None:
+def _write_live_summary(
+    run_dir: Path, phase: Literal["baseline", "protected"], rows: list[dict[str, Any]], metrics: dict[str, Any],
+) -> None:
+    if not rows:
+        return
+    report = _comparison_markdown(
+        {phase: metrics}, rows if phase == "baseline" else [], rows if phase == "protected" else [],
+    )
+    path = run_dir / f"{phase}_summary_live.md"
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(f"Live snapshot generated at {_now()}. Evaluation may still be in progress.\n\n" + report, encoding="utf-8")
+    temporary.replace(path)
+
+
+def _print_progress(
+    phase: str, completed: int, total: int, rows: list[dict[str, Any]], started: float, *,
+    current_suite: str, session_attempts: int | None = None, pending_remaining: int | None = None,
+) -> None:
     metrics = _phase_metrics(rows)
     elapsed = time.perf_counter() - started
-    avg = elapsed / max(completed, 1)
-    remaining = max(total - completed, 0) * avg
+    avg = elapsed / max(session_attempts if session_attempts is not None else completed, 1)
+    remaining = max(pending_remaining if pending_remaining is not None else total - completed, 0) * avg
     print(
         f"{phase} progress {completed}/{total} | task_success={metrics['task_success']:.2%} "
         f"| ASR={metrics['attack_success_rate']:.2%} | utility={metrics['utility']:.2%} "
@@ -931,24 +1100,41 @@ def _read_existing(path: Path) -> dict[str, dict[str, Any]]:
     rows: dict[str, dict[str, Any]] = {}
     if not path.exists():
         return rows
-    for line in path.read_text(encoding="utf-8").splitlines():
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
         if line.strip():
-            row = json.loads(line)
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                if index != len(lines) - 1:
+                    raise ValueError(f"Corrupt JSONL at {path}:{index + 1}; refusing to discard results")
+                backup = path.with_name(path.name + ".truncated_backup")
+                if not backup.exists():
+                    shutil.copy2(path, backup)
+                print(f"Recovering interrupted final JSONL line; original preserved in {backup}", flush=True)
+                break
             rows[row["case_id"]] = row
     return rows
 
 
 def _rewrite_unique_jsonl(path: Path, rows: dict[str, dict[str, Any]]) -> None:
-    if not path.exists() or not rows:
+    if not rows:
         return
-    with path.open("w", encoding="utf-8") as handle:
+    temporary = path.with_name(path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
         for row in rows.values():
             handle.write(json.dumps(row, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    temporary.replace(path)
 
 
-def _append_jsonl(path: Path, row: dict[str, Any]) -> None:
+def _append_jsonl(path: Path, row: dict[str, Any], *, durable: bool = True) -> None:
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, sort_keys=True) + "\n")
+        handle.flush()
+        if durable:
+            os.fsync(handle.fileno())
 
 
 def _append_action_rows(path: Path, row: dict[str, Any]) -> None:
@@ -981,18 +1167,20 @@ def _append_action_rows(path: Path, row: dict[str, Any]) -> None:
                 "goal_similarity": action_gate.get("goal_similarity"),
                 **trace,
             },
+            durable=False,
         )
 
 
 def _rewrite_action_jsonl(path: Path, rows: Any) -> None:
-    if path.exists():
-        path.unlink()
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text("", encoding="utf-8")
     for row in rows:
-        _append_action_rows(path, row)
+        _append_action_rows(temporary, row)
+    temporary.replace(path)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    atomic_json(path, payload)
 
 
 def _rate(numerator: int, denominator: int) -> float:
@@ -1007,6 +1195,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run AgentDojo pilot baseline-vs-protected benchmark.")
     parser.add_argument("--suites", nargs="+", default=list(DEFAULT_SUITES))
     parser.add_argument("--limit", type=int, default=None)
+    reproduction = parser.add_mutually_exclusive_group()
+    reproduction.add_argument("--case-ids", nargs="+", help="Restrict selected cases to these exact IDs for reproduction.")
+    reproduction.add_argument("--case-ids-file", type=Path, help="JSON manifest with a nonempty case_ids list for reproduction.")
     parser.add_argument("--smoke-balanced", action="store_true", help="Run one benign and one attacked case per selected suite.")
     parser.add_argument("--clean-limit", type=int, default=None, help="Select this many clean AgentDojo user tasks.")
     parser.add_argument("--attack-limit", type=int, default=None, help="Select this many attacked user-task/injection combinations.")
@@ -1032,6 +1223,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--resume", action="store_true", default=True)
+    parser.add_argument("--retry-errors", action="store_true", help="Retry saved runtime failures/manual skips once after unfinished cases, preserving successful completed cases.")
+    parser.add_argument("--heartbeat-seconds", type=float, default=30.0, help="Show and persist current case/stage while a case is running.")
+    parser.add_argument("--llm-timeout-seconds", type=float, default=600.0, help="Qwen HTTP request timeout, with SDK retries disabled.")
+    parser.add_argument("--case-timeout-seconds", type=float, default=3600.0, help="Whole-case POSIX deadline; 0 disables. Timeouts are unknown outcomes, never successful defenses.")
+    parser.add_argument("--max-output-tokens", type=int, default=None, help="Optional Qwen output cap; omitted preserves historical decoding settings. Truncation is a runtime failure.")
     parser.add_argument("--skip-preflight", action="store_true")
     parser.add_argument(
         "--action-timeout-seconds",
@@ -1058,7 +1254,27 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default="baseline-first",
         help="Phase order when --phase both is used. protected-first is for debugging, not official benchmark reporting.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.case_ids_file is not None:
+        try:
+            manifest = json.loads(args.case_ids_file.read_text(encoding="utf-8"))
+            args.case_ids = manifest["case_ids"]
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            parser.error(f"Cannot load case ID manifest: {type(exc).__name__}")
+    if args.case_ids is not None and (
+        not isinstance(args.case_ids, list) or not args.case_ids
+        or any(not isinstance(value, str) or not value.strip() for value in args.case_ids)
+        or len(set(args.case_ids)) != len(args.case_ids)
+    ):
+        parser.error("case IDs must be a nonempty list of unique nonempty strings")
+    positive_values = (args.heartbeat_seconds, args.llm_timeout_seconds, args.action_timeout_seconds)
+    if any(not math.isfinite(value) or value <= 0 for value in positive_values):
+        parser.error("heartbeat, LLM timeout, and Action Gate timeout must be finite and positive")
+    if not math.isfinite(args.case_timeout_seconds) or args.case_timeout_seconds < 0:
+        parser.error("case timeout must be finite and nonnegative")
+    if args.max_output_tokens is not None and args.max_output_tokens <= 0:
+        parser.error("max-output-tokens must be positive")
+    return args
 
 
 def _safe_attr(obj: Any, name: str) -> Any:
@@ -1101,6 +1317,40 @@ def _preflight(args: argparse.Namespace) -> None:
             f"Configured model {args.model_id!r} was not listed by {url}. Available models: {models}. "
             "Pull the model or pass --model-id with an available model."
         )
+    if args.phase != "baseline":
+        actor_base = f"http://localhost:{port}"
+        model_names_by_url: dict[str, list[str]] = {actor_base: models}
+        for suite_name in args.suites:
+            policy = load_policy(REPO_ROOT / "evaluation" / "agentdojo" / "policies" / f"{suite_name}.yaml")
+            base_url = policy.evaluator.base_url.rstrip("/")
+            if base_url not in model_names_by_url:
+                try:
+                    available = requests.get(f"{base_url}/api/tags", timeout=5)
+                    available.raise_for_status()
+                    model_names_by_url[base_url] = [item["name"] for item in available.json().get("models", [])]
+                except (requests.RequestException, ValueError, KeyError) as exc:
+                    raise SystemExit(f"Action Gate evaluator endpoint is unavailable for {suite_name}: {type(exc).__name__}") from exc
+            expected = _ollama_model_tag(policy.evaluator.model)
+            if expected not in {_ollama_model_tag(name) for name in model_names_by_url[base_url]}:
+                raise SystemExit(
+                    f"Action Gate model {policy.evaluator.model!r} for {suite_name} is unavailable. "
+                    f"Install it before protected evaluation: ollama pull {policy.evaluator.model}"
+                )
+    args._ollama_context_tokens = None
+    try:
+        state = requests.get(f"http://localhost:{port}/api/ps", timeout=5)
+        state.raise_for_status()
+        for model in state.json().get("models", []):
+            if model.get("name") == args.model_id or model.get("model") == args.model_id:
+                args._ollama_context_tokens = model.get("context_length")
+                break
+    except (requests.RequestException, ValueError):
+        # Other OpenAI-compatible local servers need not implement Ollama's status API.
+        pass
+
+
+def _ollama_model_tag(name: str) -> str:
+    return name if ":" in name.rsplit("/", 1)[-1] else name + ":latest"
 
 
 if __name__ == "__main__":

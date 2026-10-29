@@ -268,3 +268,64 @@ def test_metrics_separate_middleware_fp_from_model_utility_failure() -> None:
     assert metrics["model_utility_failures"] == 1
     assert metrics["failure_breakdown"]["middleware_false_positive_cases"] == ["clean-blocked"]
     assert metrics["failure_breakdown"]["model_utility_failure_cases"] == ["clean-model-fail"]
+
+
+def test_resume_eta_counts_only_this_sessions_attempts(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(harness.time, "perf_counter", lambda: 20.0)
+    harness._print_progress(
+        "protected", 800, 1046, [], 0.0, current_suite="workspace",
+        session_attempts=2, pending_remaining=9,
+    )
+    assert "eta=90.0s" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("option,value", [
+    ("--heartbeat-seconds", "nan"),
+    ("--llm-timeout-seconds", "inf"),
+    ("--action-timeout-seconds", "0"),
+    ("--action-timeout-seconds", "-1"),
+    ("--case-timeout-seconds", "nan"),
+    ("--case-timeout-seconds", "inf"),
+])
+def test_invalid_runtime_budgets_rejected_before_execution(option, value) -> None:
+    with pytest.raises(SystemExit) as caught:
+        harness._parse_args([option, value])
+    assert caught.value.code == 2
+
+
+def _fake_preflight(monkeypatch, installed):
+    monkeypatch.setenv("LOCAL_LLM_PORT", "11434")
+
+    def get(url, **kwargs):
+        class Response:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                if url.endswith("/v1/models"):
+                    return {"data": [{"id": name} for name in installed]}
+                return {"models": [{"name": "qwen3:4b-instruct", "context_length": 16384}]}
+
+        return Response()
+
+    monkeypatch.setattr(harness.requests, "get", get)
+
+
+def test_preflight_accepts_installed_gate_models_with_latest_alias(monkeypatch) -> None:
+    _fake_preflight(monkeypatch, ["qwen3:4b-instruct", "llama3.2:latest"])
+    args = harness._parse_args(["--phase", "protected"])
+    harness._preflight(args)
+    assert args._ollama_context_tokens == 16384
+
+
+def test_preflight_refuses_missing_action_verifier_before_benchmark(monkeypatch) -> None:
+    _fake_preflight(monkeypatch, ["qwen3:4b-instruct"])
+    args = harness._parse_args(["--phase", "protected"])
+    with pytest.raises(SystemExit, match="Action Gate model 'llama3.2'"):
+        harness._preflight(args)
+
+
+def test_baseline_does_not_require_action_verifier(monkeypatch) -> None:
+    _fake_preflight(monkeypatch, ["qwen3:4b-instruct"])
+    args = harness._parse_args(["--phase", "baseline"])
+    harness._preflight(args)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import Mock
 
 from agentdojo.functions_runtime import FunctionCall, FunctionsRuntime, make_function
 from agentdojo.types import ChatAssistantMessage
@@ -37,6 +38,7 @@ from aegisvault.runtime.action_gate import (
 from aegisvault.runtime.action_gate.evaluators import ActionEvaluator
 from aegisvault.runtime.goal_vault import GoalAnchor, GoalEmbedder, GoalVault, InMemoryGoalVaultBackend
 from aegisvault.sentinel import SentinelConfig, SentinelDecision, SentinelDecisionLevel, SentinelExecutionState, SentinelMonitor
+from evaluation.agentdojo.tool_call_parser import parse_model_call
 
 
 class FakeEmbedder(GoalEmbedder):
@@ -220,6 +222,21 @@ def test_real_agentdojo_layer0_tool_block_prevents_runtime_execution() -> None:
     assert tool_message["role"] == "tool"
     assert tool_message["error"] is not None
     assert "Tool is denied" in tool_message["error"]
+
+
+def test_repaired_tool_call_cannot_bypass_layer0() -> None:
+    runtime = FunctionsRuntime([make_function(delete_workspace)])
+    runtime.run_function = Mock(wraps=runtime.run_function)
+    parsed = parse_model_call(
+        '<function=delete_workspace>```json\n{"target":"all"}\n```</function>', runtime.functions,
+    )
+    _, _, _, messages, _ = executor().query(
+        "Search workspace notes", runtime,
+        messages=[assistant_message(parsed.name, parsed.arguments)],
+        extra_args={"task_id": "repaired-denied-tool"},
+    )
+    assert "Tool is denied" in messages[-1]["error"]
+    runtime.run_function.assert_not_called()
 
 
 def test_real_agentdojo_pipeline_derives_session_when_runner_does_not_pass_task_id() -> None:

@@ -1,0 +1,8 @@
+# Historical reproduction versions verified on Intel macOS with Python 3.12.
+# Not a complete dependency lock or a production security recommendation.
+numpy==1.26.4
+torch==2.2.2
+sentence-transformers==3.0.1
+transformers==4.44.2
+agentdojo==0.1.35
+openai==2.45.0

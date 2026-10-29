@@ -379,30 +379,38 @@ python evaluation/aegisbench/run_aegisbench.py
 
 AegisBench documentation is in `docs/aegisbench_v1.md`. Benchmark cases live in `datasets/benchmarks/aegisbench_v1/`, and reports are written to `reports/aegisbench_v1/<run_id>/`.
 
-Run the AgentDojo protected benchmark sample:
+Run a small AgentDojo protected smoke sample (live local models required):
 
 ```bash
 TOKENIZERS_PARALLELISM=false LOCAL_LLM_PORT=11434 .venv/bin/python evaluation/agentdojo/run_pilot_benchmark.py \
-  --clean-limit 97 \
-  --attack-limit 60 \
-  --balanced-by-suite \
-  --selection-strategy first \
-  --case-layout interleave-types \
+  --smoke-balanced \
   --phase protected \
-  --action-timeout-seconds 120 \
-  --output-dir evaluation/agentdojo/results/agentdojo_stageA_20clean_10attack_fix3
+  --output-dir evaluation/agentdojo/results/my_smoke
 ```
 
-Latest saved AgentDojo protected run:
+AgentDojo coverage snapshot, **29 October 2026** (partial outcomes, not a finished
+full baseline-versus-protected study):
 
-- Result folder: `evaluation/agentdojo/results/agentdojo_stageA_20clean_10attack_fix3`
-- Coverage: 157 cases total, including all 97 clean AgentDojo user tasks and 60 injected attack cases
-- Attack Success Rate / IMP / Tool ASR: 0.0% on the 60 injected cases
-- Middleware false positives: 5 / 97 clean cases, or 5.15%
-- Model utility failures: 54 / 97 clean cases, or 55.67%
-- Clean utility success: 39.18%
+- **1,046 unique saved cases:** 97 clean tasks and 949 attacked task/injection combinations.
+- **968 evaluated outcomes:** all 97 clean tasks and 871 attacked cases.
+- **78 unresolved runtime failures**, all in Workspace: 58 timeouts, 10 connection
+  errors, and 10 malformed tool-call outputs. These are **not successful defenses**.
+- Conditional attack success: **1/871 = 0.115%**, excluding unknown outcomes.
+- Clean utility: **38/97 = 39.18%**. Candidate middleware FPs: **5/97 = 5.15%**;
+  candidate model/evaluator utility failures: **54/97 = 55.67%**.
 
-AgentDojo reporting separates AegisVault middleware false positives from local Qwen/model execution failures. A clean task is counted as a middleware false positive only when AegisVault blocks or modifies a legitimate action; wrong dates, wrong arguments, arithmetic mistakes, duplicate tool choices, or AgentDojo exact-match misses are counted as model utility failures.
+The FP/model-failure split is an automated trace heuristic requiring manual
+confirmation. A model failure is not automatically a middleware FP. The existing
+IMP and Tool ASR fields alias one AgentDojo attack-success flag, not separate
+attack measurements. Recovery used retries and evolving parser/context settings;
+these results must not be presented as a single frozen, independently repeated
+experiment or a measured improvement over an unmatched baseline.
+
+See [benchmark status and contributor reproduction steps](evaluation/agentdojo/BENCHMARK_STATUS.md),
+[publishable aggregate data and unresolved case IDs](evaluation/agentdojo/snapshots/2026-10-29/),
+and [AgentDojo setup and recovery](evaluation/agentdojo/README.md).
+Raw local logs/results remain Git-ignored. No Gemini API key or real email/banking
+credentials are needed for this local AgentDojo path.
 
 Run the optional Ollama integration test only when Ollama is running and the configured model is available:
 
@@ -415,6 +423,7 @@ AEGISVAULT_RUN_OLLAMA_TESTS=1 pytest -m ollama
 - Stage 1 supports synchronous Python callables only.
 - Ollama is the only built-in evaluator provider.
 - Deterministic checks are intentionally lightweight.
-- The middleware does not perform embeddings, semantic similarity, or complex security scanning.
+- Stage 1 scope checks do not use embeddings. Later runtime layers use goal
+  embeddings and drift signals, but do not guarantee detection of every attack.
 - Runtime evaluator failures follow policy-configured fallback behavior.
 - The package is not published to PyPI; use editable local installation for development.

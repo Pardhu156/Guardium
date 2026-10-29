@@ -26,3 +26,7 @@ reports/aegisbench_v1/*
 reports/aegisbench_live/*
 !reports/aegisbench_live/.gitkeep
 .DS_Store
+.env
+.env.*
+!.env.example
+!.env.*.example

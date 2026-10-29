@@ -1,0 +1,2 @@
+# Optional benchmark dependency, not required by the AegisVault SDK.
+agentdojo==0.1.35

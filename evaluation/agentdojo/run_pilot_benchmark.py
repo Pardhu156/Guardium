@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from uuid import uuid4
 
 import requests
@@ -48,7 +48,8 @@ from aegisvault.runtime.action_gate.evaluators import OllamaActionEvaluator
 from aegisvault.runtime.goal_vault import GoalEmbeddingError, GoalVault, InMemoryGoalVaultBackend, SentenceTransformerGoalEmbedder
 from aegisvault.sentinel import SentinelConfig, SentinelDecision, SentinelDecisionLevel, SentinelExecutionState, SentinelMonitor
 from evaluation.agentdojo.reliability import (
-    CaseObserver, CaseTimeout, CheckedLocalLLM, ContextWindowError, ObservedElement, atomic_json, case_deadline, run_lock,
+    CaseObserver, CaseTimeout, CheckedLocalLLM, ContextWindowError, ModelServiceUnavailableError,
+    ObservedElement, atomic_json, case_deadline, run_lock,
 )
 from evaluation.agentdojo.tool_call_parser import PARSER_REVISION
 
@@ -128,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     with run_lock(run_dir):
         try:
             return _main(args, run_dir)
-        except ContextWindowError as exc:
+        except (ContextWindowError, ModelServiceUnavailableError) as exc:
             print(f"Benchmark stopped: {exc}", file=sys.stderr, flush=True)
             return 2
 
@@ -189,6 +190,9 @@ def _main(args: argparse.Namespace, run_dir: Path) -> int:
             "llm_timeout_seconds": args.llm_timeout_seconds,
             "case_timeout_seconds": args.case_timeout_seconds,
             "max_output_tokens": args.max_output_tokens,
+            "stream_model_output": args.stream_model_output,
+            "format_repair_attempts": args.format_repair_attempts,
+            "tool_output_format": args.tool_output_format or "yaml",
             "retry_errors": args.retry_errors,
             "retry_order": "unfinished-first",
             "parser_revision": PARSER_REVISION,
@@ -432,7 +436,7 @@ def _run_phase(phase: Literal["baseline", "protected"], cases: list[PilotCase], 
             showing_retries = True
             progress = tqdm(total=len(deferred), initial=0, desc=f"{phase} AgentDojo retries", unit="case")
         was_saved = case.case_id in existing
-        configuration_failure: ContextWindowError | None = None
+        configuration_failure: ContextWindowError | ModelServiceUnavailableError | None = None
         started = time.perf_counter()
         observer = CaseObserver(run_dir, phase, case.case_id, args.heartbeat_seconds)
         args._observer = observer
@@ -442,7 +446,7 @@ def _run_phase(phase: Literal["baseline", "protected"], cases: list[PilotCase], 
                 row = _run_case(phase, case, args)
                 row["status"] = "completed"
         except (Exception, CaseTimeout) as exc:
-            if isinstance(exc, ContextWindowError):
+            if isinstance(exc, (ContextWindowError, ModelServiceUnavailableError)):
                 configuration_failure = exc
             row = {
                 "phase": phase,
@@ -459,10 +463,12 @@ def _run_phase(phase: Literal["baseline", "protected"], cases: list[PilotCase], 
                 "middleware": args._middleware_counts,
                 "error": f"{exc.__class__.__name__}: {exc}",
             }
-            if configuration_failure is not None:
+            if isinstance(configuration_failure, ContextWindowError):
                 row["failure_category"] = "infrastructure_context_limit"
                 row["prompt_tokens"] = configuration_failure.prompt_tokens
                 row["context_tokens"] = configuration_failure.context_tokens
+            elif isinstance(configuration_failure, ModelServiceUnavailableError):
+                row["failure_category"] = "infrastructure_connection"
         except KeyboardInterrupt:
             progress.close()
             print("Interrupted. Finished cases are saved; this unfinished case will run on resume.", flush=True)
@@ -472,6 +478,13 @@ def _run_phase(phase: Literal["baseline", "protected"], cases: list[PilotCase], 
         row["latency_ms"] = (time.perf_counter() - started) * 1000
         row["parser_revision"] = PARSER_REVISION
         row["parser_repairs"] = observer.parser_repairs
+        row["execution_settings"] = {
+            "stream_model_output": args.stream_model_output,
+            "format_repair_attempts": args.format_repair_attempts,
+            "tool_output_format": args.tool_output_format or "yaml",
+            "llm_timeout_seconds": args.llm_timeout_seconds,
+            "case_timeout_seconds": args.case_timeout_seconds,
+        }
         _append_jsonl(run_dir / f"{phase}_attempts.jsonl", row)
         existing[case.case_id] = row
         _rewrite_unique_jsonl(phase_path, existing)
@@ -579,6 +592,7 @@ def _pipeline_for_phase(phase: Literal["baseline", "protected"], suite: Any, arg
         action_config=_agentdojo_action_config(),
         tool_metadata_resolver=lambda function, tool_name: _agentdojo_tool_metadata(case.suite, function, tool_name),
         decision_sink=record_action,
+        tool_output_formatter=_tool_output_formatter(args),
     )
     pipeline = AgentPipeline(
         [
@@ -600,20 +614,26 @@ def _pipeline_for_phase(phase: Literal["baseline", "protected"], suite: Any, arg
 
 
 def _baseline_pipeline(args: argparse.Namespace) -> AgentPipeline:
-    from functools import partial
-    from agentdojo.agent_pipeline.tool_execution import tool_result_to_str
-
     llm = _llm(args)
-    formatter = partial(tool_result_to_str, dump_fn=json.dumps) if args.tool_output_format == "json" else tool_result_to_str
-    executor = ObservedElement(ToolsExecutor(formatter), getattr(args, "_observer", None), "baseline tool execution")
+    executor = ObservedElement(ToolsExecutor(_tool_output_formatter(args)), getattr(args, "_observer", None), "baseline tool execution")
     pipeline = AgentPipeline([SystemMessage(_system_message(args)), InitQuery(), llm, ToolsExecutionLoop([executor, llm])])
     pipeline.name = args.model
     return pipeline
 
 
+def _tool_output_formatter(args: argparse.Namespace) -> Callable[[Any], str]:
+    from functools import partial
+    from agentdojo.agent_pipeline.tool_execution import tool_result_to_str
+
+    return partial(tool_result_to_str, dump_fn=json.dumps) if args.tool_output_format == "json" else tool_result_to_str
+
+
 def _llm(args: argparse.Namespace) -> Any:
     llm = get_llm("local", args.model, args.model_id, args.tool_delimiter)
-    checked = CheckedLocalLLM(llm, args.llm_timeout_seconds, args.max_output_tokens, getattr(args, "_observer", None))
+    checked = CheckedLocalLLM(
+        llm, args.llm_timeout_seconds, args.max_output_tokens, getattr(args, "_observer", None),
+        stream_output=args.stream_model_output, format_repair_attempts=args.format_repair_attempts,
+    )
     return ObservedElement(checked, getattr(args, "_observer", None), "Qwen generation")
 
 
@@ -1228,6 +1248,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--llm-timeout-seconds", type=float, default=600.0, help="Qwen HTTP request timeout, with SDK retries disabled.")
     parser.add_argument("--case-timeout-seconds", type=float, default=3600.0, help="Whole-case POSIX deadline; 0 disables. Timeouts are unknown outcomes, never successful defenses.")
     parser.add_argument("--max-output-tokens", type=int, default=None, help="Optional Qwen output cap; omitted preserves historical decoding settings. Truncation is a runtime failure.")
+    parser.add_argument("--stream-model-output", action="store_true", help="Consume actor output incrementally; retain all text and reject incomplete streams.")
+    parser.add_argument("--format-repair-attempts", type=int, choices=[0, 1], default=0, help="Optional bounded actor regeneration after invalid tool-call syntax; no malformed proposal executes.")
     parser.add_argument("--skip-preflight", action="store_true")
     parser.add_argument(
         "--action-timeout-seconds",

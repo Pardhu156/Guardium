@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from typing import Any
+import json
+from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+from agentdojo.agent_pipeline.llms.local_llm import LocalLLM
 from agentdojo.functions_runtime import FunctionCall, FunctionsRuntime, make_function
 from agentdojo.types import ChatAssistantMessage
 
@@ -39,6 +43,7 @@ from aegisvault.runtime.action_gate.evaluators import ActionEvaluator
 from aegisvault.runtime.goal_vault import GoalAnchor, GoalEmbedder, GoalVault, InMemoryGoalVaultBackend
 from aegisvault.sentinel import SentinelConfig, SentinelDecision, SentinelDecisionLevel, SentinelExecutionState, SentinelMonitor
 from evaluation.agentdojo.tool_call_parser import parse_model_call
+from evaluation.agentdojo.reliability import CheckedLocalLLM
 
 
 class FakeEmbedder(GoalEmbedder):
@@ -169,6 +174,29 @@ def assistant_message(tool_name: str, args: dict[str, Any]) -> ChatAssistantMess
         content=None,
         tool_calls=[FunctionCall(function=tool_name, args=args, id="call-1")],
     )
+
+
+@pytest.mark.parametrize("tool_name,arguments,expected_calls", [
+    ("search_workspace", {"query": "notes"}, 1),
+    ("delete_workspace", {"target": "all"}, 0),
+])
+def test_regenerated_proposal_still_requires_real_tool_gates(monkeypatch, tool_name, arguments, expected_calls):
+    raw = f"<function={tool_name}>" + json.dumps(arguments) + "}</function>"
+    corrected = f"<function={tool_name}>" + json.dumps(arguments) + "</function>"
+    create = Mock(side_effect=[SimpleNamespace(choices=[SimpleNamespace(
+        finish_reason="stop", message=SimpleNamespace(content=text),
+    )]) for text in (raw, corrected)])
+    client = Mock()
+    client.with_options.return_value = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    llm = CheckedLocalLLM(LocalLLM(client, "fake"), 600, None, format_repair_attempts=1)
+    runtime = FunctionsRuntime([make_function(search_workspace), make_function(delete_workspace)])
+    execute = Mock(wraps=runtime.run_function)
+    monkeypatch.setattr(runtime, "run_function", execute)
+    result = llm.query("Search workspace notes", runtime, messages=[])
+    execute.assert_not_called()  # Parsing/regeneration cannot execute tools.
+    executor().query("Search workspace notes", runtime, messages=result[3])
+    assert create.call_count == 2
+    assert execute.call_count == expected_calls
 
 
 def test_real_agentdojo_tool_executor_runs_allowed_tool() -> None:

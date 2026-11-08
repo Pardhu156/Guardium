@@ -3,11 +3,13 @@
 This folder contains the Stage 6.1 compatibility layer for routing AgentDojo
 benchmark tasks through AegisVault runtime security.
 
-**Current public snapshot (29 October 2026):** 1,046 saved cases, 968 evaluated,
-78 unresolved runtime failures. See [BENCHMARK_STATUS.md](BENCHMARK_STATUS.md)
-for exact counts, limitations, installation, and contributor reproduction steps.
-The sanitized [snapshot](snapshots/2026-10-29/) includes all 78 unresolved IDs;
-it deliberately excludes raw prompts, model responses, arguments, and credentials.
+**Protected coverage complete (9 November 2026):** 1,046/1,046 evaluated across
+the original and recovery result sets, with no unresolved cases. See
+[BENCHMARK_STATUS.md](BENCHMARK_STATUS.md) and the
+[final aggregate snapshot](snapshots/2026-11-09/summary.json) for counts and
+limitations. The [29 October snapshot](snapshots/2026-10-29/) preserves the
+historical 78-case failure manifest for reproduction. Both public snapshots
+exclude raw prompts, model responses, arguments, and credentials.
 
 The AgentDojo adapter preserves the production runtime security path:
 
@@ -54,6 +56,10 @@ saved coverage, and the full resume command. The model, tool loop, security
 policies, embeddings, prompts, and security thresholds remain unchanged.
 See [RUN_HEALTH_REVIEW.md](RUN_HEALTH_REVIEW.md) for the follow-up review of
 remaining malformed outputs, memory pressure, model availability, and reporting.
+See [RECOVERY_78_ANALYSIS.md](RECOVERY_78_ANALYSIS.md) for the 5 November review
+of the remaining 78 cases, optional streamed transport, bounded format
+regeneration, and exact smoke/retry commands. Historical result files and the
+29 October public snapshot have not been rewritten.
 
 For repeated `broken JSON` failures, see [PARSER_ANALYSIS.md](PARSER_ANALYSIS.md).
 The isolated `schema-envelope-v1` adapter normalizes empty no-argument calls
@@ -122,6 +128,8 @@ Additional runtime controls:
 | `--case-timeout-seconds` | 3600 | Whole-case POSIX deadline; `0` disables it |
 | `--retry-errors` | off | Run unfinished cases first, then retry saved errors/manual skips once at the end |
 | `--max-output-tokens` | unset | Optional generation cap; changes the decoding budget |
+| `--stream-model-output` | off | Receive complete actor output incrementally, with character/first-chunk diagnostics; incomplete streams never execute |
+| `--format-repair-attempts 0\|1` | 0 | At most one additional actor generation after invalid tool-call syntax, with no execution of the malformed proposal |
 | `--case-ids ID ...` | unset | Restrict selected cases to exact IDs for isolated reproduction |
 | `--case-ids-file PATH` | unset | Restrict selected cases using a JSON `case_ids` manifest |
 
@@ -139,6 +147,34 @@ control, so this is not an operating-system process kill. A timed-out request
 may continue computing on the model server until the server notices cancellation.
 The existing Action Gate timeout remains 120 seconds and follows its configured
 fail-closed behavior; it is separate from the Qwen/case budgets.
+
+With streaming enabled, the HTTP read timeout bounds inactivity between received
+data, not the complete generation's duration. The whole-case deadline remains
+active. Long prompt evaluation can still exceed the request timeout before any
+text is emitted. Streaming improves observability and avoids the buffered
+response wait; it does not make CPU inference faster. The recovery guide uses an
+explicit 1800-second actor timeout for these large-context cases, not a security
+threshold change.
+
+Ollama connection errors now persist the failed attempt and stop with exit code
+2 before attempting subsequent cases. Restore the server before resuming rather
+than recording a batch of connection failures. An ordinary generation timeout
+remains an unknown per-case outcome; it is not automatically retried in-place.
+
+Format regeneration is opt-in and changes only the actor's failure recovery:
+one failed proposal and a fixed formatting-feedback message are appended to the
+request sent to the same actor. The original task/history and decoding settings
+are retained. A new proposal must still pass every normal tool security gate.
+Invalid JSON is never made executable by dropping extra braces or guessing
+values. Both raw responses and the retry event are recorded. Failure after the
+second proposal remains unknown, with no third request or tool execution.
+
+Both phases now honor the existing `--tool-output-format` setting through the
+same formatter. JSON mode previously affected only the baseline. Neither mode
+discards fields or injected text, and default YAML behavior is unchanged.
+Transport, format-retry budget, and output format are saved in run metadata and
+per-attempt settings. Use a new folder when changing these options for a
+controlled experiment; do not claim historical retries are independent trials.
 
 Runtime errors, malformed model calls, empty answers, truncated generations,
 and historical manual skips are recorded as unevaluated outcomes. They are

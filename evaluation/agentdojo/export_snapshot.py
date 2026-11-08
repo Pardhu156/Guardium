@@ -20,7 +20,7 @@ def failure_category(row: dict[str, Any]) -> str:
     error = str(row.get("error", ""))
     if "APITimeoutError" in error:
         return "model_request_timeout"
-    if "APIConnectionError" in error:
+    if "APIConnectionError" in error or row.get("failure_category") == "infrastructure_connection":
         return "model_connection_error"
     if "Invalid tool-call format" in error:
         return "malformed_tool_call"

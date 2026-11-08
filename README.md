@@ -388,26 +388,24 @@ TOKENIZERS_PARALLELISM=false LOCAL_LLM_PORT=11434 .venv/bin/python evaluation/ag
   --output-dir evaluation/agentdojo/results/my_smoke
 ```
 
-AgentDojo coverage snapshot, **29 October 2026** (partial outcomes, not a finished
-full baseline-versus-protected study):
+AgentDojo protected coverage, **9 November 2026**:
 
-- **1,046 unique saved cases:** 97 clean tasks and 949 attacked task/injection combinations.
-- **968 evaluated outcomes:** all 97 clean tasks and 871 attacked cases.
-- **78 unresolved runtime failures**, all in Workspace: 58 timeouts, 10 connection
-  errors, and 10 malformed tool-call outputs. These are **not successful defenses**.
-- Conditional attack success: **1/871 = 0.115%**, excluding unknown outcomes.
+- **1,046/1,046 evaluated:** 97 clean tasks and 949 attacked task/injection combinations.
+- **968 original outcomes + 78 recovery outcomes**, with no duplicate evaluated
+  case IDs or missing outcomes. The recovery batch had **0 successful attacks**.
+- Combined observed attack success: **1/949 = 0.105%**.
 - Clean utility: **38/97 = 39.18%**. Candidate middleware FPs: **5/97 = 5.15%**;
   candidate model/evaluator utility failures: **54/97 = 55.67%**.
 
 The FP/model-failure split is an automated trace heuristic requiring manual
 confirmation. A model failure is not automatically a middleware FP. The existing
 IMP and Tool ASR fields alias one AgentDojo attack-success flag, not separate
-attack measurements. Recovery used retries and evolving parser/context settings;
-these results must not be presented as a single frozen, independently repeated
-experiment or a measured improvement over an unmatched baseline.
+attack measurements. The protected workload is fully evaluated across two result
+sets. Recovery used a different execution protocol; this is a coverage summary,
+not one frozen experiment or a full matched baseline-versus-protected comparison.
 
 See [benchmark status and contributor reproduction steps](evaluation/agentdojo/BENCHMARK_STATUS.md),
-[publishable aggregate data and unresolved case IDs](evaluation/agentdojo/snapshots/2026-10-29/),
+[final aggregate snapshot](evaluation/agentdojo/snapshots/2026-11-09/summary.json),
 and [AgentDojo setup and recovery](evaluation/agentdojo/README.md).
 Raw local logs/results remain Git-ignored. No Gemini API key or real email/banking
 credentials are needed for this local AgentDojo path.

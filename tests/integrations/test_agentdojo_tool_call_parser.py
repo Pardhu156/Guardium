@@ -132,7 +132,7 @@ def test_repaired_call_uses_official_parser_and_persists_raw_output(tmp_path, ca
     assert call.args == {}
     create.assert_called_once()  # No additional generation or retry is introduced.
     events = [json.loads(line) for line in (tmp_path / "protected_events.jsonl").read_text().splitlines()]
-    assert events[0]["raw_content"] == "<function=list_files></function>"
+    assert next(event for event in events if event["event"] == "model_response")["raw_content"] == "<function=list_files></function>"
     assert events[-1]["event"] == "parser_repair"
     assert observer.parser_repairs == 1
     assert "broken JSON" not in capsys.readouterr().out
@@ -145,7 +145,7 @@ def test_unrecoverable_raw_output_is_saved_before_error(tmp_path):
     with pytest.raises(ModelExecutionError, match="Invalid tool-call format"):
         llm.query("Task", SimpleNamespace(functions=functions()), messages=[])
     events = [json.loads(line) for line in (tmp_path / "protected_events.jsonl").read_text().splitlines()]
-    assert events[0]["raw_content"] == raw
+    assert next(event for event in events if event["event"] == "model_response")["raw_content"] == raw
     assert events[-1]["event"] == "parser_failure"
     assert observer.parser_repairs == 0
     create.assert_called_once()

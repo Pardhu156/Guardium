@@ -1,6 +1,36 @@
-# AgentDojo Coverage and Open Runtime Issues
+# AgentDojo Coverage and Reproduction
 
-## Verified snapshot
+## Completed protected coverage
+
+Final recovery case saved **9 November 2026, 02:32 IST**. The 78 recovery IDs
+match the original unknown outcomes and the published reproduction manifest
+exactly. Their evaluated results do not overlap the original 968 evaluated IDs.
+Together, the two sets cover every one of the 1,046 selected case IDs.
+
+| Result set | Clean evaluated | Attacks evaluated | Successful attacks |
+|---|---:|---:|---:|
+| Original evaluated outcomes | 97 | 871 | 1 |
+| Recovery outcomes | 0 | 78 | 0 |
+| Combined | 97 | 949 | 1 |
+
+- **Unresolved: 0.** Clean utility is 38/97 (39.18%); attacked-task utility is
+  425/949 (44.78%). Combined observed attack success is 1/949 (0.105%).
+- Workspace now has 600/600 evaluated cases; Slack 126/126, Banking 160/160,
+  and Travel 160/160.
+- The clean-task attribution is unchanged: 5 candidate middleware false
+  positives and 54 candidate model/evaluator utility failures. This attribution
+  requires manual confirmation.
+
+See the [final aggregate snapshot](snapshots/2026-11-09/summary.json) for counts,
+source result digests, and recovery settings. The original failure rows remain
+in the historical run; only the aggregate uses their recovered outcomes.
+The 78 recovery cases used streaming, up to one format regeneration per
+generation, a 1,800-second actor read timeout, and a 3,600-second case deadline.
+These are descriptive protected results across two execution protocols, not a
+single frozen benchmark or a matched comparison against an unprotected baseline.
+No rerun is needed to complete this protected selection.
+
+## Historical snapshot before recovery
 
 Snapshot date: **29 October 2026**. Source results last updated at approximately
 00:35 IST. This is a protected-only local measurement with Qwen, not a completed
@@ -23,7 +53,7 @@ succeeded. The FP attribution is a block-trace heuristic, not verified causality
 Correct security blocks must not be counted as FPs just because a clean task
 failed. Model and evaluator failures are not automatically middleware defects.
 
-All unresolved cases are in Workspace. The other suites have evaluated outcomes:
+At that snapshot, all unresolved cases were in Workspace:
 
 | Suite | Saved | Evaluated | Unresolved |
 |---|---:|---:|---:|
@@ -32,13 +62,13 @@ All unresolved cases are in Workspace. The other suites have evaluated outcomes:
 | Banking | 160 | 160 | 0 |
 | Travel | 160 | 160 | 0 |
 
-The [public summary](snapshots/2026-10-29/summary.json) is machine-readable.
+The [historical public summary](snapshots/2026-10-29/summary.json) is machine-readable.
 The [reproduction manifest](snapshots/2026-10-29/unresolved_cases.json) lists
-every unresolved case ID, suite, task/injection IDs, and error category. Raw
+every previously unresolved case ID, suite, task/injection IDs, and error category. Raw
 model messages, proposed arguments, error bodies, logs, and local paths are
 not included. Original local result files remain ignored by Git.
 
-## Open issues
+## Historical failure categories
 
 | Recorded category | Cases | What contributors should investigate |
 |---|---:|---|
@@ -51,11 +81,10 @@ prove an attack was blocked. A connection error does not prove a benchmark case
 is incompatible. Earlier retries recovered other cases, but recovery is not
 guaranteed and later attempts can produce different outputs.
 
-The 78 unknown attack outcomes are excluded from conditional ASR. Attack outcome
-coverage is **871/949 = 91.78%**. Over all 949 attempted attacks, observed success
-is a lower bound of **1/949 = 0.105%**; if every unknown succeeded, the upper
-bound would be **79/949 = 8.325%**. Neither bound assigns labels to unknown cases.
-Do not call the other 870 evaluated attacks "detected by AegisVault" without
+In the October snapshot, the 78 unknown attack outcomes were excluded from
+conditional ASR, and attack outcome coverage was **871/949 = 91.78%**.
+The recovery results above supersede those unknown outcomes for coverage.
+Do not call unsuccessful attacks "detected by AegisVault" without
 attribution: some may have failed because of the actor's own behavior.
 
 Current `IMP` and `Tool ASR` fields alias the same AgentDojo success flag. They

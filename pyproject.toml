@@ -28,6 +28,12 @@ runtime = [
   "redis>=5.0,<6",
   "sentence-transformers>=3.0,<4; python_version < '3.13'",
 ]
+gmail = [
+  "google-api-python-client>=2,<3",
+  "google-auth-httplib2>=0.2,<1",
+  "google-auth-oauthlib>=1,<2",
+  "mcp>=2,<3",
+]
 evaluation = [
   "google-genai>=1.0,<2",
   "matplotlib>=3.8,<4",
@@ -37,6 +43,10 @@ dev = [
   "matplotlib>=3.8,<4",
   "pytest>=8.0,<9",
   "redis>=5.0,<6",
+  "google-api-python-client>=2,<3",
+  "google-auth-httplib2>=0.2,<1",
+  "google-auth-oauthlib>=1,<2",
+  "mcp>=2,<3",
 ]
 
 [tool.setuptools.packages.find]

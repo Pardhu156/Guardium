@@ -30,3 +30,9 @@ reports/aegisbench_live/*
 .env.*
 !.env.example
 !.env.*.example
+
+# Local Gmail OAuth material (never commit).
+/credentials.json
+/token.json
+/mcp/gmail/credentials.json
+/mcp/gmail/token.json

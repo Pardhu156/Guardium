@@ -77,8 +77,15 @@ def test_unknown_mcp_tool_is_blocked_and_not_executed() -> None:
 def test_agentdojo_import_does_not_load_mcp_demo_modules() -> None:
     code = (
         "import sys\n"
+        "from pathlib import Path\n"
         "import evaluation.agentdojo.run_pilot_benchmark\n"
-        "print(any(name in {'mcp.server', 'mcp.client', 'mcp.tools'} for name in sys.modules))\n"
+        "demo_root = (Path.cwd() / 'mcp').resolve()\n"
+        "loaded_local_demo = False\n"
+        "for name in ('mcp.server', 'mcp.client', 'mcp.tools'):\n"
+        "    module_path = getattr(sys.modules.get(name), '__file__', None)\n"
+        "    if module_path and demo_root in Path(module_path).resolve().parents:\n"
+        "        loaded_local_demo = True\n"
+        "print(loaded_local_demo)\n"
     )
     completed = subprocess.run(
         [sys.executable, "-c", code],

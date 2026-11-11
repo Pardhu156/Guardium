@@ -18,6 +18,11 @@ Stage 5.2 adds the Sentinel runtime monitor for goal-drift signals and an option
 
 Stage 6.1 adds AgentDojo integration for routing Workspace, Slack, Banking, and Travel benchmark tasks through AegisVault runtime security. See [evaluation/agentdojo/README.md](evaluation/agentdojo/README.md).
 
+Stage 7 Phase 2 adds a dry-run-first Gmail API and official MCP SDK integration
+for the local Qwen/Ollama agent. It keeps the recipient allowlist active in
+baseline and protected modes and routes protected tool proposals through the
+existing guards before MCP execution. See [mcp/gmail/README.md](mcp/gmail/README.md).
+
 ## Stage 1 Scope
 
 Included:

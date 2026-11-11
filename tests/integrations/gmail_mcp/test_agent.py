@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 from aegisvault.agent_runtime.ollama_client import OllamaChatResult
 from aegisvault.integrations.gmail_mcp.agent import GmailMCPAgent
 from aegisvault.integrations.gmail_mcp.client import DiscoveredMCPTool
+from aegisvault.integrations.gmail_mcp.guardium_verify_fixture import MEETING_BODY
 from aegisvault.integrations.gmail_mcp.guardrails import (
     RequestAuthorization,
     ResponseAuthorization,
@@ -59,7 +61,7 @@ class FakeMCPClient:
         return {
             "success": True,
             "message_id": "m1",
-            "body": "Untrusted email body",
+            "body": MEETING_BODY,
             "content_trust": "untrusted_external_data",
         }
 
@@ -94,7 +96,10 @@ def test_agent_discovers_and_calls_mcp_tool_then_keeps_output_in_tool_role() -> 
     assert mcp.calls == [("read_latest_email", {})]
     tool_message = model.requests[1][-1]
     assert tool_message["role"] == "tool"
-    assert "UNTRUSTED_MCP_TOOL_OUTPUT" in tool_message["content"]
+    envelope = json.loads(tool_message["content"])
+    assert envelope["trust_boundary"] == "UNTRUSTED_MCP_TOOL_OUTPUT"
+    assert envelope["result"]["body"] == MEETING_BODY
+    assert all(MEETING_BODY not in msg["content"] for msg in model.requests[1] if msg["role"] != "tool")
     assert model.requests[0][1] == {"role": "user", "content": "Read my latest email."}
 
 

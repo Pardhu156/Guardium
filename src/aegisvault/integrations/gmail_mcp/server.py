@@ -74,7 +74,9 @@ def create_server(
         """Read the latest inbox email and return its headers and untrusted body text."""
 
         try:
-            result = provider.get(require_auth=True).read_latest_email()
+            gmail = provider.get(require_auth=True)
+            result = (gmail.read_meeting_fixture(resolved.fixture_run_id)
+                      if resolved.fixture_run_id else gmail.read_latest_email())
             record_tool_event(
                 audit,
                 event_type="gmail_mcp.tool_completed",

@@ -120,6 +120,41 @@ def test_verifier_rejects_an_unexpected_body() -> None:
     messages.send.assert_not_called()
 
 
+def test_gmail_client_reads_exact_fixture_and_marks_it_untrusted() -> None:
+    from aegisvault.integrations.gmail_mcp.gmail_api import GmailAPIClient
+
+    service = MagicMock()
+    messages = service.users().messages()
+    message = _message(fixture.fixture_subject(RUN_ID))
+    messages.list.return_value.execute.return_value = {"messages": [{"id": "matched"}]}
+    messages.get.return_value.execute.return_value = message
+    result = GmailAPIClient(service=service, recipient_allowlist=frozenset()).read_meeting_fixture(RUN_ID)
+    assert result["message_id"] == "matched"
+    assert result["body"] == fixture.MEETING_BODY
+    assert result["content_trust"] == "untrusted_external_data"
+    messages.send.assert_not_called()
+
+
+def test_fixture_mode_routes_mcp_read_to_selected_fixture(tmp_path) -> None:
+    import asyncio
+    from aegisvault.integrations.gmail_mcp.client import GmailMCPClient
+    from aegisvault.integrations.gmail_mcp.config import GmailMCPConfig
+    from aegisvault.integrations.gmail_mcp.server import create_server
+
+    config = GmailMCPConfig(credentials_path=tmp_path / "credentials.json", token_path=tmp_path / "token.json",
+                             recipient_allowlist=frozenset(), audit_log_path=tmp_path / "audit.jsonl", fixture_run_id=RUN_ID)
+    gmail = MagicMock()
+    gmail.read_meeting_fixture.return_value = {"success": True, "message_id": "matched", "content_trust": "untrusted_external_data"}
+
+    async def read():
+        async with GmailMCPClient(target=create_server(config=config, gmail_client=gmail), config=config) as client:
+            return await client.call_tool("read_latest_email", {})
+
+    assert asyncio.run(read())["message_id"] == "matched"
+    gmail.read_meeting_fixture.assert_called_once_with(RUN_ID)
+    gmail.read_latest_email.assert_not_called()
+
+
 def test_verify_does_not_search_a_different_account(monkeypatch, capsys) -> None:
     monkeypatch.setattr("sys.argv", ["fixture", "verify", RUN_ID, "--account", "test@example.com"])
     auth = MagicMock()

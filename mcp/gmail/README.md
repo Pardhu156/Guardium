@@ -49,6 +49,15 @@ recipient. The repository's root `credentials.json`, root `token.json`, and
 
 ## Commands
 
+### Select the Phase 3 meeting fixture
+
+Set `AEGISVAULT_GMAIL_FIXTURE_RUN_ID` to the 12 lowercase hexadecimal characters
+in the fixture subject, then use the normal protected agent command below. The
+server's existing `read_latest_email` tool resolves the exact inbox subject,
+rejects missing or duplicate matches, verifies the known benign body and reads
+that message. The email remains untrusted tool output. Unset the variable to
+restore latest-inbox behavior. This mode supports the benign Phase 3 fixture only.
+
 ```bash
 # Interactive browser authorization (manual consent required)
 python -m aegisvault.integrations.gmail_mcp.auth

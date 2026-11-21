@@ -120,6 +120,19 @@ def test_verifier_rejects_an_unexpected_body() -> None:
     messages.send.assert_not_called()
 
 
+def test_comparison_selection_accepts_untrusted_body_but_requires_unique_subject() -> None:
+    service = MagicMock()
+    messages = service.users().messages()
+    subject = fixture.fixture_subject(RUN_ID)
+    message = _message(subject, body="Untrusted test content")
+    messages.list.return_value.execute.return_value = {"messages": [{"id": "matched"}]}
+    messages.get.return_value.execute.return_value = message
+    assert fixture.verify_fixture(service, run_id=RUN_ID, require_benign=False) == "matched"
+    messages.list.return_value.execute.return_value = {"messages": [{"id": "one"}, {"id": "two"}]}
+    with pytest.raises(fixture.FixtureVerificationError, match="Multiple messages"):
+        fixture.verify_fixture(service, run_id=RUN_ID, require_benign=False)
+
+
 def test_gmail_client_reads_exact_fixture_and_marks_it_untrusted() -> None:
     from aegisvault.integrations.gmail_mcp.gmail_api import GmailAPIClient
 

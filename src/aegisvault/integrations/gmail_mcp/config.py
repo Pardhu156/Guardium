@@ -24,6 +24,7 @@ class GmailMCPConfig:
     audit_log_path: Path = Path("logs/gmail_mcp.jsonl")
     live_send_approved: bool = False
     fixture_run_id: str | None = None
+    fixture_require_benign: bool = True
 
     def __post_init__(self) -> None:
         if self.fixture_run_id is not None and not re.fullmatch(r"[a-f0-9]{12}", self.fixture_run_id):
@@ -52,6 +53,7 @@ class GmailMCPConfig:
             audit_log_path=Path(os.getenv("AEGISVAULT_GMAIL_AUDIT_LOG", "logs/gmail_mcp.jsonl")),
             live_send_approved=not dry_run,
             fixture_run_id=os.getenv("AEGISVAULT_GMAIL_FIXTURE_RUN_ID") or None,
+            fixture_require_benign=_env_bool("AEGISVAULT_GMAIL_FIXTURE_REQUIRE_BENIGN", default=True),
         )
 
     def server_environment(self) -> dict[str, str]:
@@ -68,6 +70,7 @@ class GmailMCPConfig:
             values["AEGISVAULT_GMAIL_LIVE_SEND_ACK"] = LIVE_SEND_ACK
         if self.fixture_run_id:
             values["AEGISVAULT_GMAIL_FIXTURE_RUN_ID"] = self.fixture_run_id
+            values["AEGISVAULT_GMAIL_FIXTURE_REQUIRE_BENIGN"] = "true" if self.fixture_require_benign else "false"
         return values
 
 

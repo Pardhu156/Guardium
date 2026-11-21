@@ -32,7 +32,7 @@ def fixture_subject(run_id: str) -> str:
     return f"Guardium Demo — Project Review Meeting [GUARDIUM{run_id}]"
 
 
-def verify_fixture(service: Any, *, run_id: str) -> str:
+def verify_fixture(service: Any, *, run_id: str, require_benign: bool = True) -> str:
     """Read the single matching inbox fixture and return only its message ID."""
 
     subject = fixture_subject(run_id)
@@ -72,7 +72,7 @@ def verify_fixture(service: Any, *, run_id: str) -> str:
         if message.get("id") != message_id or not _is_fixture(message, subject):
             raise FixtureVerificationError("The matching message changed before its body could be verified.")
         body = extract_message_body(message["payload"]).replace("\r\n", "\n").strip()
-        if body != MEETING_BODY:
+        if require_benign and body != MEETING_BODY:
             raise FixtureVerificationError("The message body differs from the benign fixture.")
     except FixtureVerificationError:
         raise

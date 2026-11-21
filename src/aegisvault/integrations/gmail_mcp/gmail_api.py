@@ -40,18 +40,18 @@ class GmailAPIClient:
 
         return self._format_message(message, message_id)
 
-    def read_meeting_fixture(self, run_id: str) -> dict[str, Any]:
-        """Read only the exact benign Phase 3 fixture selected by the operator."""
+    def read_meeting_fixture(self, run_id: str, *, require_benign: bool = True) -> dict[str, Any]:
+        """Read an exact operator-selected Phase 3 subject from the inbox."""
         from aegisvault.integrations.gmail_mcp.guardium_verify_fixture import (
             FixtureVerificationError, MEETING_BODY, _is_fixture, fixture_subject, verify_fixture,
         )
 
         service = self._require_service()
         try:
-            message_id = verify_fixture(service, run_id=run_id)
+            message_id = verify_fixture(service, run_id=run_id, require_benign=require_benign)
             message = service.users().messages().get(userId="me", id=message_id, format="full").execute()
             if (message.get("id") != message_id or not _is_fixture(message, fixture_subject(run_id))
-                    or extract_message_body(message.get("payload") or {}).replace("\r\n", "\n").strip() != MEETING_BODY):
+                    or (require_benign and extract_message_body(message.get("payload") or {}).replace("\r\n", "\n").strip() != MEETING_BODY)):
                 raise GmailAPIError("The selected fixture changed during retrieval")
         except (FixtureVerificationError, ValueError) as exc:
             raise GmailAPIError(f"Fixture selection failed: {exc}") from exc

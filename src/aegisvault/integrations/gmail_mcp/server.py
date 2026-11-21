@@ -75,7 +75,9 @@ def create_server(
 
         try:
             gmail = provider.get(require_auth=True)
-            result = (gmail.read_meeting_fixture(resolved.fixture_run_id)
+            result = (gmail.read_meeting_fixture(resolved.fixture_run_id, require_benign=False)
+                      if resolved.fixture_run_id and not resolved.fixture_require_benign else
+                      gmail.read_meeting_fixture(resolved.fixture_run_id)
                       if resolved.fixture_run_id else gmail.read_latest_email())
             record_tool_event(
                 audit,

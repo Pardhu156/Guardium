@@ -28,6 +28,8 @@ from aegisvault.policy import load_policy
 
 SUBJECT = "Guardium Authorized Test"
 BODY = "GUARDIUM_LIVE_TEST_123"
+STAGE9_SUBJECT = "Guardium Stage 9.0 — Real Gmail Send Test"
+STAGE9_BODY = "This is a real Gmail integration test sent through Guardium's Gmail MCP server. Gmail sending is working successfully."
 RUNS = Path("logs/guardium-live-mail")
 POLICY = Path(__file__).resolve().parents[4] / "mcp/gmail/policy.yaml"
 
@@ -68,10 +70,13 @@ class ConfirmedMessageClient(GmailMCPClient):
         recipient: str,
         report: dict[str, Any],
         report_path: Path,
+        stage9: bool = False,
     ) -> None:
         gmail = GmailAPIClient(service=service, recipient_allowlist=config.recipient_allowlist, dry_run=config.dry_run)
         super().__init__(target=create_server(config=config, gmail_client=gmail), config=config)
-        self.message = {"to": recipient, "subject": SUBJECT, "body": BODY}
+        self.message = {"to": recipient, "subject": STAGE9_SUBJECT if stage9 else SUBJECT,
+                        "body": STAGE9_BODY if stage9 else BODY}
+        self.stage9 = stage9
         self.report = report
         self.report_path = report_path
 
@@ -83,9 +88,27 @@ class ConfirmedMessageClient(GmailMCPClient):
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         if name != "send_email" or arguments != self.message:
+            if self.stage9 and name == "send_email":
+                proposed = arguments or {}
+                mismatch = [key for key, value in self.message.items() if proposed.get(key) != value]
+                if proposed.keys() - self.message.keys():
+                    mismatch.append("unexpected_fields")
+                self.report.setdefault("proposal_mismatches", []).append(mismatch)
+                _save(self.report_path, self.report)
             raise GmailMCPClientError("Proposed tool call differs from the confirmed message.")
         if self.report["dispatch_status"] != "not_dispatched":
             raise GmailMCPClientError("This run already dispatched its one permitted MCP call.")
+
+        if self.stage9 and not self.config.dry_run:
+            # Reserve across processes and restarts, including an ambiguous API outcome.
+            marker = self.report_path.parent.parent / "stage9-dispatch.run"
+            try:
+                with marker.open("x", encoding="ascii") as handle:
+                    handle.write(self.report["run_id"] + "\n")
+            except FileExistsError as exc:
+                self.report["dispatch_status"] = "duplicate_prevented"
+                _save(self.report_path, self.report)
+                raise GmailMCPClientError("Stage 9 dispatch already reserved. Review the original receipt.") from exc
 
         # Persist before dispatch so a crash cannot be mistaken for a clean failure.
         self.report["dispatch_status"] = "outcome_unknown"
@@ -141,8 +164,12 @@ async def _preflight(args: argparse.Namespace) -> tuple[GmailMCPConfig, OllamaCh
 
 async def _send(args: argparse.Namespace) -> int:
     config, actor, service, recipient = await _preflight(args)
+    stage9 = getattr(args, "stage9", False)
+    subject, body = (STAGE9_SUBJECT, STAGE9_BODY) if stage9 else (SUBJECT, BODY)
     if args.live_send:
-        print(f"From: {_mailbox(args.sender)}\nTo: {recipient}\nSubject: {SUBJECT}\nBody: {BODY}")
+        if stage9 and (RUNS / "stage9-dispatch.run").exists():
+            raise LiveMailError("Stage 9 dispatch already reserved. Review the run in logs/guardium-live-mail/stage9-dispatch.run.")
+        print(f"From: {_mailbox(args.sender)}\nTo: {recipient}\nSubject: {subject}\nBody: {body}")
         if input("Type SEND to authorize exactly this message: ") != "SEND":
             raise LiveMailError("Live send was not confirmed.")
 
@@ -156,6 +183,7 @@ async def _send(args: argparse.Namespace) -> int:
     )
     report = {
         "run_id": run_id,
+        "test": "stage9" if stage9 else "authorized",
         "model": actor.model,
         "mode": "live" if args.live_send else "dry_run",
         "dispatch_status": "not_dispatched",
@@ -175,13 +203,16 @@ async def _send(args: argparse.Namespace) -> int:
         agent = GmailMCPAgent(
             model_client=actor,
             mcp_client=ConfirmedMessageClient(
-                config=config, service=service, recipient=recipient, report=report, report_path=path,
+                config=config, service=service, recipient=recipient, report=report, report_path=path, stage9=stage9,
             ),
             guardrails=guardrails,
             audit_sink=JsonLineAuditSink(config.audit_log_path),
             max_tool_rounds=1,
         )
-        request = f'Send a test email to my approved test mailbox {recipient} with subject "{SUBJECT}" and body "{BODY}".'
+        request = f'Send a test email to my approved test mailbox {recipient} with subject "{subject}" and body "{body}".'
+        if stage9:
+            fields = json.dumps({"to": recipient, "subject": subject, "body": body}, ensure_ascii=False)
+            request = f"Send one test email to my approved mailbox. Copy these exact JSON values into send_email:\n{fields}"
         result = await agent.run(request, session_id=run_id)
         if result.request_authorization and result.request_authorization.decision:
             report["request_gate"] = result.request_authorization.decision.verdict.value
@@ -201,6 +232,13 @@ async def _send(args: argparse.Namespace) -> int:
                     ) if decision else None,
                     "mcp_returned_result": record.executed,
                 })
+                if decision and "minimum_llm_confidence" in decision.metadata:
+                    report["send_proposals"][-1].update(
+                        policy_rule="minimum_llm_confidence",
+                        verifier_confidence=decision.confidence,
+                        minimum_confidence=decision.metadata["minimum_llm_confidence"],
+                        original_verdict=decision.metadata["original_verdict"],
+                    )
     except Exception as exc:
         report["error"] = type(exc).__name__
     finally:
@@ -216,6 +254,7 @@ def main() -> int:
     preflight = commands.add_parser("preflight")
     send = commands.add_parser("send")
     send.add_argument("--live-send", action="store_true")
+    send.add_argument("--stage9", action="store_true", help="Use the fixed Stage 9 integration test message.")
     for command in (preflight, send):
         command.add_argument("--sender", required=True)
         command.add_argument("--recipient", required=True)

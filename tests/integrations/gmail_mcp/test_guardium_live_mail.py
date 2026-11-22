@@ -88,6 +88,46 @@ def test_live_confirmation_must_precede_agent_creation(monkeypatch, tmp_path: Pa
     assert not live.RUNS.exists()
 
 
+@pytest.mark.parametrize("timeout", [False, True])
+def test_stage9_reserves_one_exact_dispatch_across_runs(tmp_path: Path, timeout: bool) -> None:
+    service = Mock()
+    send = service.users.return_value.messages.return_value.send
+    send.return_value.execute.return_value = {"id": "receipt"}
+    if timeout:
+        send.return_value.execute.side_effect = TimeoutError
+    message = {"to": RECIPIENT, "subject": "Guardium Stage 9.0 — Real Gmail Send Test",
+               "body": "This is a real Gmail integration test sent through Guardium's Gmail MCP server. Gmail sending is working successfully."}
+
+    async def attempt(run_id: str, live_send: bool, *, expect_duplicate: bool = False):
+        folder = tmp_path / run_id
+        folder.mkdir()
+        report = {"run_id": run_id, "dispatch_status": "not_dispatched", "gmail_api_message_id": None}
+        client = live.ConfirmedMessageClient(config=config_for(folder, live_send=live_send), service=service,
+                                           recipient=RECIPIENT, report=report, report_path=folder / "result.json",
+                                           stage9=True)
+        async with client:
+            if not live_send:
+                with pytest.raises(GmailMCPClientError, match="differs"):
+                    await client.call_tool("send_email", message | {"body": message["body"] + "."})
+                saved = json.loads((folder / "result.json").read_text())
+                assert saved["proposal_mismatches"] == [["body"]]
+                assert saved["dispatch_status"] == "not_dispatched"
+                send.assert_not_called()
+            if expect_duplicate:
+                with pytest.raises(GmailMCPClientError, match="already reserved"):
+                    await client.call_tool("send_email", message)
+            else:
+                await client.call_tool("send_email", message)
+        return report["dispatch_status"]
+
+    assert asyncio.run(attempt("preview", False)) == "validated_not_sent"
+    send.assert_not_called()
+    assert asyncio.run(attempt("first", True)) == ("outcome_unknown" if timeout else "gmail_api_accepted")
+    assert asyncio.run(attempt("second", True, expect_duplicate=True)) == "duplicate_prevented"
+    assert (tmp_path / "stage9-dispatch.run").read_text().strip() == "first"
+    send.assert_called_once()
+
+
 def test_ambiguous_api_result_is_saved_and_cannot_be_retried(tmp_path: Path) -> None:
     service = Mock()
     send = service.users.return_value.messages.return_value.send

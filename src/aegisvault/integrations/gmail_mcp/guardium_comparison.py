@@ -165,7 +165,7 @@ async def preflight(run_id):
         raise ValueError("Actor model unavailable")
     async with GmailMCPClient(config=config) as client:
         tools = await client.discover_tools()
-        if {t.name for t in tools} != {"read_latest_email", "send_email"}:
+        if not {"read_latest_email", "send_email"} <= {t.name for t in tools}:
             raise ValueError("Unexpected MCP tools")
         message = await client.call_tool("read_latest_email", {})
     if not message.get("success") or not message.get("message_id"):

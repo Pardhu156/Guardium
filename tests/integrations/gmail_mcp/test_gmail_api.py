@@ -151,3 +151,54 @@ def test_configuration_rejects_live_send_without_explicit_acknowledgement(tmp_pa
             recipient_allowlist=frozenset({"allowed@example.com"}),
             dry_run=False,
         )
+def test_threaded_reply_uses_verified_sender_and_gmail_thread():
+    import base64
+    from email import policy
+    from email.parser import BytesParser
+    from unittest.mock import MagicMock
+
+    from aegisvault.integrations.gmail_mcp.gmail_api import GmailAPIClient
+
+    service = MagicMock()
+    messages = service.users().messages()
+    messages.get.return_value.execute.return_value = {
+        "id": "message1", "threadId": "thread1", "payload": {"headers": [
+            {"name": "From", "value": "Example <sender@example.test>"},
+            {"name": "Subject", "value": "Project meeting"},
+            {"name": "Message-ID", "value": "<original@example.test>"},
+            {"name": "References", "value": "<earlier@example.test>"},
+        ]},
+    }
+    messages.send.return_value.execute.return_value = {"id": "sent1"}
+    client = GmailAPIClient(service=service, recipient_allowlist=frozenset({"sender@example.test"}), dry_run=False)
+    result = client.reply_email(original_id="message1", body="I will attend.",
+                                expected_recipient="sender@example.test", expected_subject="Re: Project meeting")
+    sent = messages.send.call_args.kwargs["body"]
+    message = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(sent["raw"]))
+    assert sent["threadId"] == "thread1"
+    assert message["To"] == "sender@example.test"
+    assert message["Subject"] == "Re: Project meeting"
+    assert message["In-Reply-To"] == "<original@example.test>"
+    assert message["References"] == "<earlier@example.test> <original@example.test>"
+    assert result["message_id"] == "sent1"
+
+
+def test_threaded_reply_rejects_unlisted_sender_without_dispatch():
+    from unittest.mock import MagicMock
+
+    import pytest
+    from aegisvault.integrations.gmail_mcp.gmail_api import GmailAPIClient, GmailRecipientBlocked
+
+    service = MagicMock()
+    messages = service.users().messages()
+    messages.get.return_value.execute.return_value = {
+        "id": "message1", "threadId": "thread1", "payload": {"headers": [
+            {"name": "From", "value": "other@example.test"},
+            {"name": "Subject", "value": "Meeting"},
+            {"name": "Message-ID", "value": "<original@example.test>"},
+        ]},
+    }
+    client = GmailAPIClient(service=service, recipient_allowlist=frozenset({"sender@example.test"}), dry_run=False)
+    with pytest.raises(GmailRecipientBlocked):
+        client.reply_email(original_id="message1", body="I will attend.")
+    messages.send.assert_not_called()

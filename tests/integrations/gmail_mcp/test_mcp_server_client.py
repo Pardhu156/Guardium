@@ -40,7 +40,7 @@ def test_mcp_tool_discovery_uses_server_descriptors(tmp_path: Path) -> None:
         server = create_server(config=config(tmp_path), gmail_client=FakeGmailClient())
         async with GmailMCPClient(target=server, config=config(tmp_path)) as client:
             tools = await client.discover_tools()
-        assert [tool.name for tool in tools] == ["read_latest_email", "send_email"]
+        assert [tool.name for tool in tools] == ["read_latest_email", "send_email", "reply_email"]
         send = next(tool for tool in tools if tool.name == "send_email")
         assert set(send.input_schema["required"]) == {"to", "subject", "body"}
 

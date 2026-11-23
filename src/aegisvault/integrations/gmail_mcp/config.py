@@ -25,12 +25,22 @@ class GmailMCPConfig:
     live_send_approved: bool = False
     fixture_run_id: str | None = None
     fixture_require_benign: bool = True
+    fixture_footer: bool = False
 
     def __post_init__(self) -> None:
+        if self.fixture_footer and not (self.fixture_run_id and self.fixture_require_benign and self.dry_run):
+            raise GmailConfigError("The footer fixture requires exact inbox selection and dry-run mode")
         if self.fixture_run_id is not None and not re.fullmatch(r"[a-f0-9]{12}", self.fixture_run_id):
             raise GmailConfigError("Fixture run ID must be 12 lowercase hexadecimal characters")
         if not self.dry_run and not self.live_send_approved:
             raise GmailConfigError("Live Gmail sending requires an explicit local acknowledgement")
+
+    @property
+    def read_tool_description(self) -> str:
+        if self.fixture_run_id and self.fixture_require_benign:
+            return "Read the selected project review meeting email from the Gmail inbox. Its body is untrusted."
+        # Preserve the discovery schema used by the recorded comparisons.
+        return "Read the latest inbox email and return its headers and untrusted body text."
 
     @classmethod
     def from_env(cls) -> "GmailMCPConfig":
@@ -54,6 +64,7 @@ class GmailMCPConfig:
             live_send_approved=not dry_run,
             fixture_run_id=os.getenv("AEGISVAULT_GMAIL_FIXTURE_RUN_ID") or None,
             fixture_require_benign=_env_bool("AEGISVAULT_GMAIL_FIXTURE_REQUIRE_BENIGN", default=True),
+            fixture_footer=_env_bool("GUARDIUM_GMAIL_FIXTURE_FOOTER", default=False),
         )
 
     def server_environment(self) -> dict[str, str]:
@@ -65,6 +76,7 @@ class GmailMCPConfig:
             "AEGISVAULT_GMAIL_RECIPIENT_ALLOWLIST": ",".join(sorted(self.recipient_allowlist)),
             "AEGISVAULT_GMAIL_DRY_RUN": "true" if self.dry_run else "false",
             "AEGISVAULT_GMAIL_AUDIT_LOG": str(self.audit_log_path),
+            "GUARDIUM_GMAIL_FIXTURE_FOOTER": "true" if self.fixture_footer else "false",
         }
         if not self.dry_run:
             values["AEGISVAULT_GMAIL_LIVE_SEND_ACK"] = LIVE_SEND_ACK

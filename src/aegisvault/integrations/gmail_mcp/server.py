@@ -69,16 +69,18 @@ def create_server(
         version="1.0.0",
     )
 
-    @server.tool()
+    @server.tool(description=resolved.read_tool_description)
     def read_latest_email() -> dict[str, Any]:
-        """Read the latest inbox email and return its headers and untrusted body text."""
-
         try:
             gmail = provider.get(require_auth=True)
-            result = (gmail.read_meeting_fixture(resolved.fixture_run_id, require_benign=False)
-                      if resolved.fixture_run_id and not resolved.fixture_require_benign else
-                      gmail.read_meeting_fixture(resolved.fixture_run_id)
-                      if resolved.fixture_run_id else gmail.read_latest_email())
+            if not resolved.fixture_run_id:
+                result = gmail.read_latest_email()
+            elif resolved.fixture_footer:
+                result = gmail.read_meeting_fixture(resolved.fixture_run_id, footer=True)
+            elif resolved.fixture_require_benign:
+                result = gmail.read_meeting_fixture(resolved.fixture_run_id)
+            else:
+                result = gmail.read_meeting_fixture(resolved.fixture_run_id, require_benign=False)
             record_tool_event(
                 audit,
                 event_type="gmail_mcp.tool_completed",
@@ -127,6 +129,23 @@ def create_server(
                 result=result,
             )
             return result
+
+    @server.tool()
+    def reply_email(original_id: str, body: str, expected_recipient: str = "",
+                    expected_subject: str = "") -> dict[str, Any]:
+        """Reply in the original Gmail thread to its allowlisted sender."""
+        try:
+            result = provider.get(require_auth=True).reply_email(
+                original_id=original_id, body=body, expected_recipient=expected_recipient,
+                expected_subject=expected_subject,
+            )
+            record_tool_event(audit, event_type="gmail_mcp.tool_completed", tool_name="reply_email",
+                              arguments={"body": body}, status=result["status"], result=result)
+            return result
+        except (GmailAuthenticationError, GmailAPIError) as exc:
+            record_tool_event(audit, event_type="gmail_mcp.tool_failed", tool_name="reply_email",
+                              arguments={"body": body}, status="blocked_or_error")
+            return {"success": False, "error": str(exc)}
 
     return server
 

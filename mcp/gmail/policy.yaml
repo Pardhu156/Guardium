@@ -70,6 +70,7 @@ layer0:
     allowed:
       - read_latest_email
       - send_email
+      - reply_email
     denied: []
     max_argument_bytes: 50000
     sensitive_argument_action: warn

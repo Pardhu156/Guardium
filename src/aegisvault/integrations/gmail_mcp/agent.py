@@ -54,6 +54,16 @@ class GuardrailAdapter(Protocol):
     def check_response(self, *, session_id: str, prompt: str, response: str) -> ResponseAuthorization: ...
 
 
+def has_gmail_message(result: dict[str, Any]) -> bool:
+    message_id = result.get("message_id")
+    return (
+        result.get("success") is True and result.get("empty") is False
+        and result.get("content_trust") == "untrusted_external_data"
+        and isinstance(message_id, str) and bool(message_id.strip())
+        and isinstance(result.get("body"), str)
+    )
+
+
 @dataclass(slots=True)
 class GmailAgentToolRecord:
     tool_name: str
@@ -62,6 +72,10 @@ class GmailAgentToolRecord:
     result: dict[str, Any] | None = None
     error: str | None = None
     authorization: ToolAuthorization | None = None
+
+    @property
+    def message_retrieved(self) -> bool:
+        return self.tool_name == "read_latest_email" and self.executed and has_gmail_message(self.result or {})
 
 
 @dataclass(slots=True)
@@ -85,12 +99,14 @@ class GmailMCPAgent:
         guardrails: GuardrailAdapter | None = None,
         audit_sink: AuditSink | None = None,
         max_tool_rounds: int = 4,
+        audit_chat_events: bool = False,
     ) -> None:
         self.model_client = model_client
         self.mcp_client = mcp_client
         self.guardrails = guardrails
         self.audit_sink = audit_sink
         self.max_tool_rounds = max_tool_rounds
+        self.audit_chat_events = audit_chat_events
 
     async def run(self, prompt: str, *, session_id: str | None = None) -> GmailAgentResult:
         original_prompt = str(prompt)
@@ -138,7 +154,45 @@ class GmailMCPAgent:
                     final_response = str(message.get("content") or "")
                     break
 
+                # Pair the model's proposal with every tool result in this round.
+                # The JSON fallback carries the proposal in content; replay it
+                # once in Ollama's native tool_calls format.
+                assistant_turn = {
+                    "role": "assistant",
+                    "content": (message.get("content") or "") if message.get("tool_calls") else "",
+                    "tool_calls": [
+                        {"function": {"name": call.name, "arguments": call.arguments}}
+                        for call in calls
+                    ],
+                }
+                if reasoning:
+                    assistant_turn["thinking"] = reasoning
+                messages.append(assistant_turn)
                 for call in calls:
+                    if self.audit_chat_events and self.audit_sink is not None:
+                        proposal = {"event_type": "gmail_agent.tool_proposed",
+                                    "session_id": resolved_session, "tool": call.name}
+                        if call.name == "send_email":
+                            for field in ("subject", "body"):
+                                value = call.arguments.get(field)
+                                if isinstance(value, str):
+                                    proposal[field + "_chars"] = len(value)
+                            recipient = call.arguments.get("to")
+                            if isinstance(recipient, str):
+                                proposal["recipient_listed"] = recipient.strip().lower() in mcp_client.config.recipient_allowlist
+                        self.audit_sink.record(proposal)
+                    arguments = call.arguments
+                    binder = getattr(type(mcp_client), "bind_tool_arguments", None)
+                    if binder is not None and call.name in tool_map:
+                        try:
+                            arguments = binder(mcp_client, call.name, arguments)
+                        except GmailMCPClientError as exc:
+                            record = GmailAgentToolRecord(tool_name=call.name, arguments=arguments,
+                                                          executed=False, error=str(exc))
+                            records.append(record)
+                            self._audit(record, resolved_session)
+                            messages.append(_tool_message(record))
+                            continue
                     if call.name not in tool_map:
                         record = GmailAgentToolRecord(
                             tool_name=call.name,
@@ -152,7 +206,7 @@ class GmailMCPAgent:
                             authorization = self.guardrails.authorize_tool(
                                 session_id=resolved_session,
                                 tool_name=call.name,
-                                arguments=call.arguments,
+                                arguments=arguments,
                                 reasoning=reasoning,
                                 current_intent=call.current_intent,
                                 step_index=round_index,
@@ -160,7 +214,7 @@ class GmailMCPAgent:
                             if not authorization.allowed:
                                 record = GmailAgentToolRecord(
                                     tool_name=call.name,
-                                    arguments=call.arguments,
+                                    arguments=arguments,
                                     executed=False,
                                     error=authorization.reason,
                                     authorization=authorization,
@@ -170,10 +224,10 @@ class GmailMCPAgent:
                                 messages.append(_tool_message(record))
                                 continue
                         try:
-                            result = await mcp_client.call_tool(call.name, call.arguments)
+                            result = await mcp_client.call_tool(call.name, arguments)
                             record = GmailAgentToolRecord(
                                 tool_name=call.name,
-                                arguments=call.arguments,
+                                arguments=arguments,
                                 executed=True,
                                 result=result,
                                 authorization=authorization,
@@ -182,7 +236,7 @@ class GmailMCPAgent:
                         except GmailMCPClientError as exc:
                             record = GmailAgentToolRecord(
                                 tool_name=call.name,
-                                arguments=call.arguments,
+                                arguments=arguments,
                                 executed=False,
                                 error=str(exc),
                                 authorization=authorization,
@@ -196,10 +250,14 @@ class GmailMCPAgent:
             if not final_response:
                 final_response = "Tool loop stopped after reaching the configured maximum rounds."
             if self.guardrails is not None:
+                evidence = {}
+                if isinstance(self.guardrails, GmailAegisVaultGuardrails) and self.guardrails.read_only_chat:
+                    evidence["message_retrieved"] = any(record.message_retrieved for record in records)
                 response_authorization = self.guardrails.check_response(
                     session_id=resolved_session,
                     prompt=original_prompt,
                     response=final_response,
+                    **evidence,
                 )
                 final_response = response_authorization.response
 
@@ -224,6 +282,27 @@ class GmailMCPAgent:
             result=record.result,
             session_id=session_id,
         )
+        if self.audit_chat_events:
+            event = {"event_type": "guardium_chat.tool_outcome", "tool": record.tool_name,
+                     "executed": record.executed,
+                     "success": record.executed and (record.result or {}).get("success") is True}
+            if record.tool_name == "reply_email" and record.error:
+                error_codes = {
+                    "Invalid reply proposal.": "invalid_arguments",
+                    "Reply must target the message read in this request.": "target_or_duplicate",
+                    "A reply proposal is already pending.": "reply_already_pending",
+                    "Read a message before proposing a reply.": "message_not_read",
+                    "Sender is not present in the recipient allowlist": "sender_not_allowlisted",
+                    "Original message lacks safe reply threading metadata": "missing_thread_metadata",
+                }
+                event["error_code"] = error_codes.get(record.error, "reply_error")
+            if record.tool_name == "read_latest_email":
+                event["message_retrieved"] = record.message_retrieved
+            elif record.tool_name in {"send_email", "reply_email"} and record.result:
+                status = record.result.get("status")
+                if status in ("recorded_not_sent", "validation_rejected", "invalid_proposal", "awaiting_operator_approval"):
+                    event["status"] = status
+            self.audit_sink.record(event)
 
 
 def _tool_message(record: GmailAgentToolRecord) -> dict[str, Any]:
@@ -234,7 +313,7 @@ def _tool_message(record: GmailAgentToolRecord) -> dict[str, Any]:
         "result": record.result,
         "error": record.error,
     }
-    return {"role": "tool", "name": record.tool_name, "content": json.dumps(payload, ensure_ascii=False)}
+    return {"role": "tool", "tool_name": record.tool_name, "content": json.dumps(payload, ensure_ascii=False)}
 
 
 async def _run_cli(args: argparse.Namespace) -> GmailAgentResult:

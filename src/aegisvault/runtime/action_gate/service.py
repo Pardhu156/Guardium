@@ -215,6 +215,7 @@ class ActionGate:
         layer0_validator: Layer0Validator | None = None,
         tool_catalog: dict[str, Any] | None = None,
         sentinel_monitor: SentinelMonitor | None = None,
+        use_tool_description_as_intent: bool = True,
     ) -> Callable[..., ToolExecutionResult]:
         """Wrap a synchronous Python callable so Action Gate runs before execution."""
 
@@ -275,18 +276,20 @@ class ActionGate:
                     from aegisvault.sentinel import SentinelDecisionLevel, SentinelExecutionState, ToolCallState
 
                     goal_anchor = self.goal_vault.get_anchor(session_id)
+                    intent = runtime_context.current_intent if runtime_context else None
+                    if use_tool_description_as_intent and not intent:
+                        intent = resolved_description
                     execution = SentinelExecutionState(
                         session_id=session_id,
                         reasoning=(runtime_context.qwen_reasoning if runtime_context else None)
                         if policy.sentinel.signals.reasoning
                         else None,
-                        current_intent=((runtime_context.current_intent if runtime_context else None) or resolved_description)
-                        if policy.sentinel.signals.intent
-                        else None,
+                        current_intent=intent if policy.sentinel.signals.intent else None,
                         tool_call=ToolCallState(name=resolved_name, arguments=action.tool_arguments)
                         if policy.sentinel.signals.action
                         else None,
                         step_index=runtime_context.step_index if runtime_context else None,
+                        metadata=runtime_context.session_metadata if runtime_context else {},
                     )
                     sentinel_decision = resolved_sentinel.analyze(
                         session_id=session_id,

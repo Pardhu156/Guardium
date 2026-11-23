@@ -40,18 +40,19 @@ class GmailAPIClient:
 
         return self._format_message(message, message_id)
 
-    def read_meeting_fixture(self, run_id: str, *, require_benign: bool = True) -> dict[str, Any]:
+    def read_meeting_fixture(self, run_id: str, *, require_benign: bool = True, footer: bool = False) -> dict[str, Any]:
         """Read an exact operator-selected Phase 3 subject from the inbox."""
         from aegisvault.integrations.gmail_mcp.guardium_verify_fixture import (
-            FixtureVerificationError, MEETING_BODY, _is_fixture, fixture_subject, verify_fixture,
+            FixtureVerificationError, FOOTER_BODY, MEETING_BODY, _is_fixture, fixture_subject, verify_fixture,
         )
 
         service = self._require_service()
         try:
-            message_id = verify_fixture(service, run_id=run_id, require_benign=require_benign)
+            expected_body = FOOTER_BODY if footer else MEETING_BODY
+            message_id = verify_fixture(service, run_id=run_id, require_benign=require_benign, footer=footer)
             message = service.users().messages().get(userId="me", id=message_id, format="full").execute()
             if (message.get("id") != message_id or not _is_fixture(message, fixture_subject(run_id))
-                    or (require_benign and extract_message_body(message.get("payload") or {}).replace("\r\n", "\n").strip() != MEETING_BODY)):
+                    or (require_benign and extract_message_body(message.get("payload") or {}).replace("\r\n", "\n").strip() != expected_body)):
                 raise GmailAPIError("The selected fixture changed during retrieval")
         except (FixtureVerificationError, ValueError) as exc:
             raise GmailAPIError(f"Fixture selection failed: {exc}") from exc
@@ -113,6 +114,64 @@ class GmailAPIClient:
             "recipient": recipient,
             "status": "sent",
         }
+
+    def reply_email(self, *, original_id: str, body: str, expected_recipient: str = "",
+                    expected_subject: str = "") -> dict[str, Any]:
+        """Reply to the verified sender of one Gmail message in its original thread."""
+        if not isinstance(original_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", original_id):
+            raise GmailAPIError("Invalid Gmail message ID")
+        if not isinstance(body, str) or not body.strip():
+            raise GmailAPIError("A reply body is required")
+        service = self._require_service()
+        try:
+            original = service.users().messages().get(
+                userId="me", id=original_id, format="metadata",
+                metadataHeaders=["From", "Subject", "Message-ID", "References"],
+            ).execute()
+        except Exception as exc:
+            raise GmailAPIError(f"Gmail reply lookup failed: {exc.__class__.__name__}") from exc
+        if original.get("id") != original_id:
+            raise GmailAPIError("The Gmail reply target changed")
+        headers = {}
+        for header in (original.get("payload") or {}).get("headers") or []:
+            name = str(header.get("name", "")).lower()
+            if name not in {"from", "subject", "message-id", "references"}:
+                continue
+            if name in headers:
+                raise GmailAPIError("Duplicate reply headers")
+            headers[name] = str(header.get("value", ""))
+        sender = _single_recipient(headers.get("from", ""))
+        if sender not in self.recipient_allowlist:
+            raise GmailRecipientBlocked("Sender is not present in the recipient allowlist")
+        thread_id = original.get("threadId")
+        message_header = headers.get("message-id", "")
+        references = headers.get("references", "")
+        subject = headers.get("subject", "")
+        if (not isinstance(thread_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", thread_id)
+                or not re.fullmatch(r"<[^<>\s]+>", message_header)
+                or not subject or any(c in subject + references for c in "\r\n")):
+            raise GmailAPIError("Original message lacks safe reply threading metadata")
+        reply_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}"
+        if not self.dry_run and (sender != expected_recipient or reply_subject != expected_subject):
+            raise GmailAPIError("Reply target differs from the approved preview")
+        if self.dry_run:
+            return {"success": True, "dry_run": True, "status": "validated_not_sent",
+                    "message_id": None, "recipient": sender, "subject": reply_subject}
+        message = EmailMessage()
+        message["To"] = sender
+        message["Subject"] = reply_subject
+        message["In-Reply-To"] = message_header
+        message["References"] = f"{references} {message_header}".strip()
+        message.set_content(body)
+        encoded = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
+        try:
+            sent = service.users().messages().send(
+                userId="me", body={"raw": encoded, "threadId": thread_id},
+            ).execute()
+        except Exception as exc:
+            raise GmailAPIError(f"Gmail reply failed: {exc.__class__.__name__}") from exc
+        return {"success": True, "dry_run": False, "status": "sent",
+                "message_id": str(sent.get("id") or ""), "recipient": sender}
 
     def _require_service(self) -> Any:
         if self.service is None:

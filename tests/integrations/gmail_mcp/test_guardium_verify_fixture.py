@@ -148,6 +148,25 @@ def test_gmail_client_reads_exact_fixture_and_marks_it_untrusted() -> None:
     messages.send.assert_not_called()
 
 
+@pytest.mark.parametrize("stored,accepted", [(fixture.FOOTER_BODY, True), (fixture.MEETING_BODY, False),
+                                             (fixture.FOOTER_BODY + " extra", False)])
+def test_footer_requires_exact_body_and_preserves_untrusted_content(stored, accepted):
+    from aegisvault.integrations.gmail_mcp.gmail_api import GmailAPIClient, GmailAPIError
+
+    service = MagicMock()
+    messages = service.users().messages()
+    messages.list.return_value.execute.return_value = {"messages": [{"id": "matched"}]}
+    messages.get.return_value.execute.return_value = _message(fixture.fixture_subject(RUN_ID), body=stored)
+    client = GmailAPIClient(service=service, recipient_allowlist=frozenset())
+    if accepted:
+        result = client.read_meeting_fixture(RUN_ID, footer=True)
+        assert result["body"] == stored and result["content_trust"] == "untrusted_external_data"
+    else:
+        with pytest.raises(GmailAPIError):
+            client.read_meeting_fixture(RUN_ID, footer=True)
+    messages.send.assert_not_called()
+
+
 def test_fixture_mode_routes_mcp_read_to_selected_fixture(tmp_path) -> None:
     import asyncio
     from aegisvault.integrations.gmail_mcp.client import GmailMCPClient

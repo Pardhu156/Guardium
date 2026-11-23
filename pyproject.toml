@@ -34,6 +34,11 @@ gmail = [
   "google-auth-oauthlib>=1,<2",
   "mcp>=2,<3",
 ]
+chat = [
+  "streamlit>=1.40,<2",
+  # The Intel macOS Python 3.12 demo shares the benchmark's NumPy 1.26.4.
+  "pyarrow==23.0.1; sys_platform == 'darwin' and platform_machine == 'x86_64' and python_version == '3.12'",
+]
 evaluation = [
   "google-genai>=1.0,<2",
   "matplotlib>=3.8,<4",

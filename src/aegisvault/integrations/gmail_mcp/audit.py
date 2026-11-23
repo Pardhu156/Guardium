@@ -7,7 +7,44 @@ from datetime import UTC, datetime
 from typing import Any, Mapping
 from uuid import uuid4
 
-from aegisvault.audit import AuditSink
+from aegisvault.audit import AuditSink, JsonLineAuditSink
+from aegisvault.types import GateDecision, Verdict
+
+
+class ChatAuditSink(JsonLineAuditSink):
+    """Persist chat decisions and execution facts without model-controlled text or arguments."""
+
+    def record(self, event: dict[str, Any]) -> None:
+        fields = {
+            "event_type", "event", "timestamp", "event_id", "session_id", "step_index",
+            "decision", "verdict", "sentinel_decision", "decision_source", "source",
+            "category", "original_verdict", "confidence", "latency_ms", "fused_risk",
+            "ema_risk", "action_drift", "intent_drift", "reasoning_drift",
+            "action_signal_available", "intent_signal_available", "reasoning_signal_available",
+            "backend_type", "ollama_called", "executed", "success", "status", "message_retrieved",
+            "recipient_listed", "subject_chars", "body_chars",
+            "error_code",
+        }
+        safe = {key: value for key, value in event.items() if key in fields}
+        for key in ("tool", "tool_name"):
+            if key in event:
+                safe[key] = event[key] if event[key] in ("read_latest_email", "send_email", "reply_email", "read_confidential_profile") else "unknown"
+        super().record(safe)
+
+    def record_gate(self, decision: GateDecision) -> None:
+        source = decision.evaluator.partition(":")[0]
+        if source not in {"ollama", "disabled", "deterministic", "fallback"}:
+            source = "other"
+        event = {"event_type": "guardium_chat.gate_outcome", "event": f"{decision.gate.value}_gate",
+                 "decision": decision.verdict.value, "source": source}
+        if decision.confidence is not None:
+            event["confidence"] = decision.confidence
+        original = decision.metadata.get("original_verdict")
+        if original in (Verdict.ALLOW.value, Verdict.BLOCK.value):
+            event.update(category="low_confidence", original_verdict=original)
+        else:
+            event["category"] = "evaluator_failure" if source == "fallback" else "gate_verdict"
+        self.record(event)
 
 
 class GmailSanitizingAuditSink(AuditSink):
